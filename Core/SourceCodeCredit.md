@@ -9,4 +9,4 @@ Rotator7 was created and provided by Sarcnet, however I will modify the code if 
 With that said, in order to preserve Rotator7, I will create a seperate folder containing a copy of Rotator7 which will be renamed with the title
 **Rotator7_Modified.**
 
-[Return](..)
+[Return](/../)

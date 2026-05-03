@@ -1,15 +1,4 @@
 #!/usr/bin/env python3
-"""
-MagneticDeclinationCalculator.py
-Modern, elegant, dark-themed GUI application that calculates the exact magnetic declination
-for the user's current location.
-
-- Forward geocoding: online via Nominatim
-- Reverse geocoding: offline via Gazetteer (with online fallback if database missing)
-- IP location: ip-api.com (online) + reverse geocoding via Gazetteer or fallback
-- Manual coordinates: validated via reverse geocoding
-- Fullscreen (F11), copy-on-double-click, tooltips, help dialog
-"""
 
 # ----------------------------------------------------------------------
 # UTF‑8 enforcement (must be at the very top)
@@ -324,7 +313,7 @@ class App(ctk.CTk):
 
         method_frame = ctk.CTkFrame(loc_card, fg_color="transparent")
         method_frame.pack(fill="x", padx=20, pady=5)
-        self.btn_gps = ctk.CTkButton(method_frame, text="🌍 Use GPS (IP)",
+        self.btn_gps = ctk.CTkButton(method_frame, text="Use your IP address",
                                      command=self._on_get_from_gps,
                                      width=150, fg_color=COLORS["secondary"],
                                      hover_color=COLORS["secondary_hover"],

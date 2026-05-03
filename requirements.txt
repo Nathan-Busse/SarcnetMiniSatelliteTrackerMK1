@@ -2,5 +2,8 @@ customtkinter
 datetime
 geocoder
 geomag
+pynmea2
+pyserial 
 python-gazetteer
 requests
+serial

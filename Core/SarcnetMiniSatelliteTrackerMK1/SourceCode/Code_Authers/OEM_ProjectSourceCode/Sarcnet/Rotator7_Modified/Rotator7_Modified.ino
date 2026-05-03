@@ -368,10 +368,13 @@ void processUserCommands(String line) {
     case 'h':                                             //Help command
       SerialPort.println("Commands:");
       SerialPort.println("az el -(0..360 0..90)");
-      SerialPort.println("r -Reset");
-      SerialPort.println("eNN.N -MagDecl");
-      SerialPort.println("c -Calibrate");
-      SerialPort.println("s -Save");
+      SerialPort.println("r -Reset the rotator and load calibration from EEPROM");
+      SerialPort.println("eNN.N -Run this command first before running the calibrate command."),
+      ("This is how the command looks with your final answer:"), 
+      ("e-20.5 or e20.5 etc."), 
+      ("Read the instructions first and double check your final answer before proceeding!");
+      SerialPort.println("c -Calibrate the Magnometer module, make sure to run eNN.N command first!");      
+      SerialPort.println("s -Save changes to eeprom");
       SerialPort.println("a -Abort");
       SerialPort.println("d -Demo");
       SerialPort.println("b -Debug");

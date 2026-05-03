@@ -1,0 +1,6 @@
+customtkinter
+datetime
+geocoder
+geomag
+python-gazetteer
+requests

@@ -1,8 +1,5 @@
 #!/usr/bin/env python3
 
-# ----------------------------------------------------------------------
-# UTF‑8 enforcement (must be at the very top)
-# ----------------------------------------------------------------------
 import os
 import sys
 import locale
@@ -37,7 +34,31 @@ import shutil
 import urllib.request
 import threading
 import queue
+import ctypes
+import time
 from pathlib import Path
+
+# ----------------------------------------------------------------------
+# Optional GPS libraries – will not crash if missing
+# ----------------------------------------------------------------------
+try:
+    import serial
+    import serial.tools.list_ports
+    import pynmea2
+    GPS_AVAILABLE = True
+except ImportError:
+    GPS_AVAILABLE = False
+
+# ----------------------------------------------------------------------
+# Optional Wi‑Fi scanning – cross‑platform
+# ----------------------------------------------------------------------
+try:
+    import subprocess
+    import re
+    import sqlite3
+    WIFI_AVAILABLE = True
+except ImportError:
+    WIFI_AVAILABLE = False
 
 # ----------------------------------------------------------------------
 # Gazetteer import (optional – falls back to online if missing)
@@ -59,7 +80,8 @@ NOMINAT_USER_AGENT = "MagneticDeclinationCalculator/1.0"
 
 BASE_DIR = Path(__file__).parent
 GAZETTEER_DB_PATH = BASE_DIR / "geonames.db"
-GAZETTEER_DATA_URL = "https://github.com/SOORAJTS2001/gazetteer/raw/main/gazetteer/data/data.db"
+GAZETTEER_DATA_URL = "https://github.com/SOORAJTS2001/gazetteer/raw/refs/heads/main/gazetteer/data/data.db"
+WIFI_DB_PATH = BASE_DIR / "wifi_location.db"
 
 COLORS = {
     "bg": "#1a1a1a",
@@ -104,6 +126,70 @@ class ToolTip:
         if self.tip_window:
             self.tip_window.destroy()
             self.tip_window = None
+
+# ----------------------------------------------------------------------
+# Admin/root check & relaunch
+# ----------------------------------------------------------------------
+def is_admin():
+    """Check if the script is running with admin/root privileges."""
+    if platform.system() == "Windows":
+        try:
+            return ctypes.windll.shell32.IsUserAnAdmin() != 0
+        except:
+            return False
+    else:
+        return os.geteuid() == 0
+
+def request_admin_and_restart():
+    """Request admin/root privileges via GUI and restart the script."""
+    try:
+        import customtkinter as ctk
+        ctk.set_appearance_mode("Dark")
+
+        def run_as_admin():
+            if platform.system() == "Windows":
+                # Create a batch file to set working directory properly
+                batch_content = f"""
+@echo off
+cd /d "{os.path.dirname(__file__)}"
+"{sys.executable}" "{__file__}"
+"""
+                with tempfile.NamedTemporaryFile(mode='w', suffix='.bat', delete=False) as f:
+                    f.write(batch_content)
+                    batch_file = f.name
+                ctypes.windll.shell32.ShellExecuteW(None, "runas", batch_file, None, None, 1)
+                root.destroy()
+                sys.exit(0)
+            else:
+                subprocess.run(['sudo', sys.executable, __file__])
+                root.destroy()
+                sys.exit(0)
+
+        def exit_app():
+            root.destroy()
+            sys.exit(0)
+
+        root = ctk.CTk()
+        root.title("Admin Required")
+        root.geometry("500x200")
+        root.attributes("-topmost", True)
+
+        label = ctk.CTkLabel(root, text="This app needs admin/root privileges to scan Wi-Fi networks.\n\nPlease run as Administrator (Windows) or with sudo (Linux/macOS).",
+                             font=("Arial", 14))
+        label.pack(pady=30)
+
+        btn_frame = ctk.CTkFrame(root)
+        btn_frame.pack(pady=10)
+
+        ctk.CTkButton(btn_frame, text="Reload as Admin", command=run_as_admin,
+                      fg_color="#2a7a3a", width=150).pack(side="left", padx=10)
+        ctk.CTkButton(btn_frame, text="Exit", command=exit_app,
+                      fg_color="#555555", width=150).pack(side="left", padx=10)
+
+        root.mainloop()
+    except ImportError:
+        print("CustomTkinter not installed. Please run this script as admin/root manually.")
+        sys.exit(1)
 
 # ----------------------------------------------------------------------
 # Gazetteer Manager (handles download, loading, and fallback)
@@ -226,6 +312,241 @@ class GazetteerManager:
             return None
 
 # ----------------------------------------------------------------------
+# Wi‑Fi Scanner (cross‑platform)
+# ----------------------------------------------------------------------
+class WiFiScanner:
+    def __init__(self):
+        self.bssids = []
+        self.platform = platform.system()
+
+    def scan(self):
+        """Scan visible Wi‑Fi access points. Returns list of BSSIDs."""
+        self.bssids = []
+        if not WIFI_AVAILABLE:
+            return []
+        try:
+            if self.platform == "Linux":
+                # Linux: requires root/sudo
+                output = subprocess.check_output(['sudo', 'iwlist', 'scan'], text=True)
+                matches = re.findall(r'Address: (([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2})', output)
+                self.bssids = [match[0] for match in matches]
+            elif self.platform == "Windows":
+                # Windows: requires admin
+                output = subprocess.check_output(['netsh', 'wlan', 'show', 'networks', 'mode=bssid'], text=True)
+                matches = re.findall(r'BSSID\s+:\s+(([0-9A-Fa-f]{2}-){5}[0-9A-Fa-f]{2})', output)
+                self.bssids = [match.replace('-', ':') for match in matches]
+            elif self.platform == "Darwin":
+                # macOS
+                output = subprocess.check_output(['airport', '-s'], text=True)
+                matches = re.findall(r'(([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2})', output)
+                self.bssids = [match[0] for match in matches]
+        except:
+            pass
+        return self.bssids
+
+    def get_location(self, db_path):
+        """Match scanned BSSIDs against a local database and return centroid."""
+        if not self.bssids:
+            return None
+        if not db_path.exists():
+            return None
+        try:
+            conn = sqlite3.connect(str(db_path))
+            cursor = conn.cursor()
+            locations = []
+            for bssid in self.bssids:
+                cursor.execute('SELECT lat, lon FROM access_points WHERE bssid = ?', (bssid,))
+                row = cursor.fetchone()
+                if row:
+                    locations.append((row[0], row[1]))
+            conn.close()
+            if not locations:
+                return None
+            # Centroid
+            avg_lat = sum(lat for lat, lon in locations) / len(locations)
+            avg_lon = sum(lon for lat, lon in locations) / len(locations)
+            return avg_lat, avg_lon
+        except:
+            return None
+
+# ----------------------------------------------------------------------
+# Wi‑Fi Database Builder (self‑calibrating)
+# ----------------------------------------------------------------------
+class WiFiDatabaseBuilder:
+    def __init__(self, parent_app):
+        self.parent_app = parent_app
+        self.db_path = WIFI_DB_PATH
+
+    def build_or_update_database(self):
+        """Build or update Wi‑Fi database using IP location + Wi‑Fi scanning."""
+        # 1. Get IP location
+        self.parent_app._set_status("DEBUG: Fetching IP location...", "info")
+        try:
+            resp = requests.get('http://ip-api.com/json/', timeout=10)
+            if resp.status_code == 200:
+                data = resp.json()
+                if data.get('status') == 'success':
+                    lat = data['lat']
+                    lon = data['lon']
+                    city = data.get('city', 'Unknown')
+                    country = data.get('country', 'Unknown')
+                    self.parent_app._set_status(f"DEBUG: IP location found: {city}, {country} ({lat:.4f}, {lon:.4f})", "info")
+                else:
+                    self.parent_app._set_status("DEBUG: IP geolocation failed - API status not success", "error")
+                    return False
+            else:
+                self.parent_app._set_status(f"DEBUG: IP geolocation failed - HTTP {resp.status_code}", "error")
+                return False
+        except Exception as e:
+            self.parent_app._set_status(f"DEBUG: Error fetching IP location: {e}", "error")
+            return False
+
+        # 2. Scan Wi‑Fi networks
+        self.parent_app._set_status("DEBUG: Scanning for Wi‑Fi networks...", "info")
+        scanner = WiFiScanner()
+        bssids = scanner.scan()
+        self.parent_app._set_status(f"DEBUG: Found {len(bssids)} access points", "info")
+
+        if not bssids:
+            self.parent_app._set_status("DEBUG: No Wi‑Fi networks found", "error")
+            return False
+
+        # 3. Build/update database
+        self.parent_app._set_status("DEBUG: Creating/updating database...", "info")
+        try:
+            if self.db_path.exists():
+                self.parent_app._set_status("DEBUG: Database already exists. Updating...", "info")
+                conn = sqlite3.connect(str(self.db_path))
+                cursor = conn.cursor()
+                # Create table if it doesn't exist
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS access_points (
+                        bssid TEXT PRIMARY KEY,
+                        lat REAL,
+                        lon REAL,
+                        timestamp INTEGER
+                    )
+                ''')
+                # Add new BSSIDs
+                for bssid in bssids:
+                    try:
+                        cursor.execute('INSERT OR REPLACE INTO access_points VALUES (?, ?, ?, ?)',
+                                      (bssid, lat, lon, int(time.time())))
+                    except Exception as e:
+                        self.parent_app._set_status(f"DEBUG: Error inserting BSSID {bssid}: {e}", "error")
+                        return False
+                conn.commit()
+                conn.close()
+                self.parent_app._set_status("DEBUG: Database updated successfully", "success")
+            else:
+                self.parent_app._set_status("DEBUG: Creating new database...", "info")
+                conn = sqlite3.connect(str(self.db_path))
+                cursor = conn.cursor()
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS access_points (
+                        bssid TEXT PRIMARY KEY,
+                        lat REAL,
+                        lon REAL,
+                        timestamp INTEGER
+                    )
+                ''')
+                for bssid in bssids:
+                    try:
+                        cursor.execute('INSERT OR REPLACE INTO access_points VALUES (?, ?, ?, ?)',
+                                      (bssid, lat, lon, int(time.time())))
+                    except Exception as e:
+                        self.parent_app._set_status(f"DEBUG: Error inserting BSSID {bssid}: {e}", "error")
+                        return False
+                conn.commit()
+                conn.close()
+                self.parent_app._set_status("DEBUG: New database created successfully", "success")
+            return True
+        except Exception as e:
+            self.parent_app._set_status(f"DEBUG: Error creating/updating database: {e}", "error")
+            return False
+
+# ----------------------------------------------------------------------
+# GPS Reader (cross‑platform via pyserial)
+# ----------------------------------------------------------------------
+class GPSReader:
+    def __init__(self, parent_app):
+        self.parent_app = parent_app
+        self.serial_port = None
+        self.reading = False
+        self.latitude = None
+        self.longitude = None
+        self.fix_quality = 0
+
+    def find_gps_port(self):
+        """Automatically find the GPS COM port."""
+        if not GPS_AVAILABLE:
+            return None
+        try:
+            ports = list(serial.tools.list_ports.comports())
+            for port in ports:
+                try:
+                    ser = serial.Serial(port.device, 9600, timeout=1)
+                    for _ in range(10):
+                        line = ser.readline().decode('ascii', errors='replace').strip()
+                        if line.startswith('$GPGGA') or line.startswith('$GNGGA'):
+                            ser.close()
+                            return port.device
+                    ser.close()
+                except:
+                    continue
+        except:
+            pass
+        return None
+
+    def start_reading(self, callback):
+        """Start reading GPS data in a background thread."""
+        if not GPS_AVAILABLE:
+            self.parent_app._set_status("GPS libraries not installed. Run: pip install pyserial pynmea2", "error")
+            return False
+
+        port = self.find_gps_port()
+        if not port:
+            self.parent_app._set_status("No GPS device found.", "error")
+            return False
+
+        try:
+            self.serial_port = serial.Serial(port, 9600, timeout=2)
+            self.reading = True
+            thread = threading.Thread(target=self._read_loop, args=(callback,), daemon=True)
+            thread.start()
+            self.parent_app._set_status(f"GPS connected on {port}", "success")
+            return True
+        except Exception as e:
+            self.parent_app._set_status(f"GPS error: {str(e)}", "error")
+            return False
+
+    def _read_loop(self, callback):
+        while self.reading:
+            try:
+                line = self.serial_port.readline().decode('ascii', errors='replace').strip()
+                if line.startswith('$GPGGA') or line.startswith('$GNGGA'):
+                    msg = pynmea2.parse(line)
+                    if msg.latitude and msg.longitude:
+                        self.latitude = msg.latitude
+                        self.longitude = msg.longitude
+                        self.fix_quality = msg.gps_qual
+                        lat = float(self.latitude)
+                        lon = float(self.longitude)
+                        callback(lat, lon, self.fix_quality)
+            except (pynmea2.ParseError, UnicodeDecodeError, ValueError, TypeError):
+                continue
+            except serial.SerialException:
+                break
+
+    def stop_reading(self):
+        self.reading = False
+        if self.serial_port:
+            try:
+                self.serial_port.close()
+            except:
+                pass
+
+# ----------------------------------------------------------------------
 # Main Application
 # ----------------------------------------------------------------------
 class App(ctk.CTk):
@@ -243,9 +564,17 @@ class App(ctk.CTk):
         self.longitude = None
         self.is_fullscreen = False
 
+        # Check admin and restart if needed
+        if not is_admin():
+            request_admin_and_restart()
+
         self.gazetteer_manager = GazetteerManager(self)
         self.gazetteer = None
         self.use_gazetteer = False
+
+        self.wifi_scanner = WiFiScanner()
+        self.wifi_builder = WiFiDatabaseBuilder(self)
+        self.gps_reader = GPSReader(self)
 
         self._create_widgets()
         self.after(100, self._initialize_gazetteer)
@@ -313,16 +642,19 @@ class App(ctk.CTk):
 
         method_frame = ctk.CTkFrame(loc_card, fg_color="transparent")
         method_frame.pack(fill="x", padx=20, pady=5)
-        self.btn_gps = ctk.CTkButton(method_frame, text="Use your IP address",
-                                     command=self._on_get_from_gps,
-                                     width=150, fg_color=COLORS["secondary"],
-                                     hover_color=COLORS["secondary_hover"],
-                                     font=("Arial", 12))
-        self.btn_gps.pack(side="left", padx=(0,20))
-        ToolTip(self.btn_gps, "Get approximate location via IP (reverse geocoded offline)")
 
+        # Main button: Locate & Calculate (single press)
+        self.btn_locate = ctk.CTkButton(method_frame, text="📍 Locate & Calculate Declination",
+                                        command=self._on_locate_and_calculate,
+                                        width=400, fg_color=COLORS["accent"],
+                                        hover_color=COLORS["accent_hover"],
+                                        font=("Arial", 14, "bold"))
+        self.btn_locate.pack(side="left", padx=(0,10))
+        ToolTip(self.btn_locate, "One‑press: get location (IP → Wi‑Fi if available) and calculate declination")
+
+        # Manual entry
         ctk.CTkLabel(method_frame, text="Manual:", font=("Arial", 12),
-                     text_color=COLORS["text_secondary"]).pack(side="left", padx=(0,5))
+                     text_color=COLORS["text_secondary"]).pack(side="left", padx=(10,5))
         self.entry_lat = ctk.CTkEntry(method_frame, placeholder_text="Lat", width=100,
                                       font=("Arial", 12))
         self.entry_lat.pack(side="left", padx=2)
@@ -360,27 +692,6 @@ class App(ctk.CTk):
                                           font=("Arial", 11), text_color="#888888")
         self.lbl_gazetteer.pack(anchor="w", padx=20, pady=(0,15))
 
-        # Card: Actions
-        action_card = ctk.CTkFrame(main_frame, fg_color=COLORS["card_bg"], corner_radius=12,
-                                   border_width=1, border_color=COLORS["card_border"])
-        action_card.pack(fill="x", pady=(0,15))
-        action_frame = ctk.CTkFrame(action_card, fg_color="transparent")
-        action_frame.pack(pady=12)
-        self.btn_calculate = ctk.CTkButton(action_frame, text="🧭 Calculate Declination",
-                                           command=self._on_calculate,
-                                           width=220, fg_color=COLORS["accent"],
-                                           hover_color=COLORS["accent_hover"],
-                                           font=("Arial", 14, "bold"))
-        self.btn_calculate.pack(side="left", padx=10)
-        ToolTip(self.btn_calculate, "Compute magnetic declination using current coordinates")
-        self.btn_clear = ctk.CTkButton(action_frame, text="🗑️ Clear All",
-                                       command=self._on_clear,
-                                       width=120, fg_color=COLORS["danger"],
-                                       hover_color=COLORS["danger_hover"],
-                                       font=("Arial", 12))
-        self.btn_clear.pack(side="left", padx=10)
-        ToolTip(self.btn_clear, "Clear all location data and inputs")
-
         # Card: Result
         result_card = ctk.CTkFrame(main_frame, fg_color=COLORS["card_bg"], corner_radius=12,
                                    border_width=1, border_color=COLORS["card_border"])
@@ -389,7 +700,8 @@ class App(ctk.CTk):
                      text_color=COLORS["text_primary"]).pack(anchor="w", padx=20, pady=(15,5))
         self.lbl_result = ctk.CTkEntry(result_card, font=("Arial", 18, "bold"),
                                        text_color=COLORS["gold"], border_width=0,
-                                       fg_color="transparent", justify="center",
+                                       fg_color=COLORS["card_bg"],
+                                       justify="center",
                                        state="readonly", width=450)
         self.lbl_result.insert(0, "Declination: 0.00°")
         self.lbl_result.pack(pady=10)
@@ -410,7 +722,7 @@ class App(ctk.CTk):
     def _show_help(self):
         dialog = ctk.CTkToplevel(self)
         dialog.title("Help")
-        dialog.geometry("600x450")
+        dialog.geometry("600x500")
         dialog.attributes("-topmost", True)
         dialog.grab_set()
         dialog.configure(fg_color=COLORS["bg"])
@@ -418,13 +730,16 @@ class App(ctk.CTk):
                              font=("Arial", 18, "bold"), text_color=COLORS["text_primary"])
         title.pack(pady=(20,10))
         text = """
-        Three ways to get coordinates:
-        1.  Enter a street address → Click "Get from Address" (online Nominatim)
-        2.  Click "Use GPS (IP)" → Your approximate location via IP (reverse geocoded offline via Gazetteer)
-        3.  Enter latitude/longitude manually → Click "Set Manual" (validated offline via Gazetteer)
+        📍 Locate & Calculate – One‑press button:
+           1. If Wi‑Fi database exists → gets location via Wi‑Fi (100‑500 m)
+           2. If no database exists → creates database using IP + Wi‑Fi scan, then uses it
+           3. Calculates declination using the final location
 
-        Offline reverse geocoding is strongly recommended, but you can skip it and use online fallback.
+        Alternative methods:
+        📍 Get from Address – Street level (online Nominatim).
+        Manual coordinates – Exact (user input).
 
+        Offline reverse geocoding via Gazetteer: shows nearest city/town/district.
         Double-click any result or status field to copy its content.
         F11 toggles true borderless fullscreen.
 
@@ -477,12 +792,11 @@ class App(ctk.CTk):
     def _reverse_geocode(self, lat, lon):
         if self.use_gazetteer and self.gazetteer:
             try:
-                for place in self.gazetteer.search([(lon, lat)], limit=1):
+                for place in self.gazetteer.search([(lon, lat)]):  # ← no limit
                     if place:
                         return f"{place.result.name}, {place.result.admin2}, {place.result.admin1}"
             except Exception as e:
                 print(f"Gazetteer reverse error: {e}")
-        # Fallback to online
         try:
             g = geocoder.reverse((lat, lon), method='nominatim', user_agent=NOMINAT_USER_AGENT)
             if g.ok:
@@ -505,6 +819,107 @@ class App(ctk.CTk):
         self.entry_address.delete(0, "end")
         self._set_status("All cleared. Ready.", "info")
 
+    def _on_locate_and_calculate(self):
+        """One‑press button: get location (Wi‑Fi or IP) and calculate declination."""
+        self._set_status("Locating...", "info")
+        self.update_idletasks()
+
+        # Step 1: Check if Wi‑Fi database exists
+        db_exists = WIFI_DB_PATH.exists()
+        self._set_status(f"Step 1: Wi‑Fi database exists? {db_exists}", "info")
+
+        # Step 2: Get location - TRY Wi‑Fi first if database exists
+        if db_exists:
+            self._set_status("Step 2: Scanning Wi‑Fi networks...", "info")
+            bssids = self.wifi_scanner.scan()
+            self._set_status(f"Step 2: Found {len(bssids)} access points", "info")
+            
+            if bssids:
+                self._set_status("Step 2: Matching BSSIDs against database...", "info")
+                location = self.wifi_scanner.get_location(WIFI_DB_PATH)
+                if location:
+                    lat, lon = location
+                    address = self._reverse_geocode(lat, lon)
+                    address_detail = f"Nearest: {address[:100]}" if address else ""
+                    self._set_coordinates(lat, lon, "Wi‑Fi Location (100‑500 m)", f"Based on {len(bssids)} access points")
+                    self._set_status(f"✅ Success! Location via Wi‑Fi: {lat:.6f}, {lon:.6f} (100‑500 m accuracy)", "success")
+                    self._set_precision("Wi‑Fi Location (100‑500 m)", address_detail)
+                    self._on_calculate()
+                    return
+                else:
+                    self._set_status("❌ No matching Wi‑Fi access points in database. Proceeding to rebuild...", "error")
+            else:
+                self._set_status("❌ No Wi‑Fi networks found. Proceeding to rebuild...", "error")
+
+        # Step 3: If no database or no match, build/update database with IP location
+        self._set_status("Step 3: Checking admin privileges...", "info")
+        if not is_admin():
+            self._set_status("❌ Admin/root required to build Wi‑Fi database.", "error")
+            return
+
+        self._set_status("Step 3: Fetching IP location to seed database...", "info")
+        ip_lat, ip_lon = None, None
+        try:
+            resp = requests.get('http://ip-api.com/json/', timeout=10)
+            if resp.status_code == 200:
+                data = resp.json()
+                if data.get('status') == 'success':
+                    ip_lat = data['lat']
+                    ip_lon = data['lon']
+                    city = data.get('city', 'Unknown')
+                    country = data.get('country', 'Unknown')
+                    self._set_status(f"Seeding database with IP location: {city}, {country} ({ip_lat:.4f}, {ip_lon:.4f})", "info")
+                else:
+                    self._set_status("❌ IP geolocation failed. Cannot build database.", "error")
+                    return
+            else:
+                self._set_status(f"❌ IP geolocation failed (HTTP {resp.status_code})", "error")
+                return
+        except Exception as e:
+            self._set_status(f"❌ Error fetching IP location: {e}", "error")
+            return
+
+        self._set_status("Step 3: Building/updating Wi‑Fi database...", "info")
+        success = self.wifi_builder.build_or_update_database()
+        if not success:
+            self._set_status("❌ Failed to build Wi‑Fi database. Falling back to IP...", "error")
+            if ip_lat is not None:
+                self._set_coordinates(ip_lat, ip_lon, "IP (5‑50 km)", "Fallback - Database build failed")
+                self._set_status(f"Using IP location: {ip_lat:.6f}, {ip_lon:.6f} (5‑50 km accuracy)", "warning")
+                self._on_calculate()
+            return
+
+        # Step 4: Use the newly built database
+        self._set_status("Step 4: Database built. Getting location via Wi‑Fi...", "info")
+        bssids = self.wifi_scanner.scan()
+        self._set_status(f"Step 4: Found {len(bssids)} access points", "info")
+        
+        if bssids:
+            self._set_status("Step 4: Matching BSSIDs against new database...", "info")
+            location = self.wifi_scanner.get_location(WIFI_DB_PATH)
+            if location:
+                lat, lon = location
+                address = self._reverse_geocode(lat, lon)
+                address_detail = f"Nearest: {address[:100]}" if address else ""
+                self._set_coordinates(lat, lon, "Wi‑Fi Location (100‑500 m)", f"Based on {len(bssids)} access points")
+                self._set_status(f"✅ Success! Location via Wi‑Fi: {lat:.6f}, {lon:.6f} (100‑500 m accuracy)", "success")
+                self._set_precision("Wi‑Fi Location (100‑500 m)", address_detail)
+                self._on_calculate()
+                return
+            else:
+                self._set_status("❌ No matching access points in new database. Falling back to IP...", "error")
+        else:
+            self._set_status("❌ No Wi‑Fi networks found. Falling back to IP...", "error")
+
+        # Step 5: Final fallback to IP
+        self._set_status("Step 5: Final fallback to IP", "info")
+        if ip_lat is not None:
+            self._set_coordinates(ip_lat, ip_lon, "IP (5‑50 km)", "Fallback - No Wi‑Fi match")
+            self._set_status(f"Using IP location: {ip_lat:.6f}, {ip_lon:.6f} (5‑50 km accuracy)", "warning")
+            self._on_calculate()
+        else:
+            self._set_status("❌ No IP location available. Please set location manually.", "error")
+
     def _on_get_from_address(self):
         a = self.entry_address.get().strip()
         if not a:
@@ -520,7 +935,7 @@ class App(ctk.CTk):
         else:
             self._set_status("Could not geocode address. Check input or internet.", "error")
 
-    def _on_get_from_gps(self):
+    def _on_get_ip(self):
         self._set_status("Fetching location via IP...", "info")
         try:
             r = requests.get('http://ip-api.com/json/', timeout=5)
@@ -529,14 +944,11 @@ class App(ctk.CTk):
                 if d.get('status') == 'success':
                     lat, lon = float(d['lat']), float(d['lon'])
                     city, country = d.get('city', 'Unknown'), d.get('country', 'Unknown')
-                    self._set_coordinates(lat, lon, "City level (IP approximate)", f"{city}, {country}")
-                    self._set_status(f"IP location: {city}, {country}. Looking up nearest address...", "info")
+                    self._set_coordinates(lat, lon, "IP (5‑50 km)", f"{city}, {country}")
+                    self._set_status(f"IP location: {city}, {country} (accuracy 5‑50 km)", "warning")
                     addr = self._reverse_geocode(lat, lon)
                     if addr:
-                        self._set_precision("City level (IP approximate)", f"Nearest: {addr[:100]}")
-                        self._set_status(f"IP location: {city}, {country}. Nearest: {addr}", "success")
-                    else:
-                        self._set_status(f"IP location: {city}, {country}. No address found.", "info")
+                        self._set_precision("IP (5‑50 km)", f"Nearest: {addr[:100]}")
                 else:
                     self._set_status("IP geolocation failed.", "error")
             else:

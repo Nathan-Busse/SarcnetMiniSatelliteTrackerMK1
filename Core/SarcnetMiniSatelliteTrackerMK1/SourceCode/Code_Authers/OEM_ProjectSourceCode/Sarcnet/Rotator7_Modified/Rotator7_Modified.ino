@@ -454,8 +454,6 @@ pinMode(elBrkPin, OUTPUT);
 digitalWrite(azBrkPin, LOW);
 digitalWrite(elBrkPin, LOW);
 
-
-
   //Reset the rotator and load configuration from EEPROM
   reset(true);
   //Initialize the serial port

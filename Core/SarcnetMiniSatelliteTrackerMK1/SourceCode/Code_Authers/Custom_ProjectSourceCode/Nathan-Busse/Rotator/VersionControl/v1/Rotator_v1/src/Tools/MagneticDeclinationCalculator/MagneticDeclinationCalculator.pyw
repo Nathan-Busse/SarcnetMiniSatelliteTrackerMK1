@@ -4,6 +4,9 @@ import os
 import sys
 import locale
 
+# Fix for charset_normalizer hang on Windows
+os.environ["CHARSET_NORMALIZER_SKIP_CACHE"] = "1"
+
 os.environ["PYTHONUTF8"] = "1"
 os.environ["PYTHONIOENCODING"] = "utf-8"
 try:
@@ -128,6 +131,67 @@ class ToolTip:
             self.tip_window = None
 
 # ----------------------------------------------------------------------
+# Console output panel
+# ----------------------------------------------------------------------
+class ConsolePanel(ctk.CTkFrame):
+    def __init__(self, master, **kwargs):
+        super().__init__(master, **kwargs)
+        self.configure(fg_color=COLORS["card_bg"], corner_radius=12, border_width=1, border_color=COLORS["card_border"])
+        
+        # Title
+        title = ctk.CTkLabel(self, text="Console Output", font=("Arial", 12, "bold"), text_color=COLORS["text_primary"])
+        title.pack(anchor="w", padx=10, pady=(5,2))
+        
+        # Text widget for console output
+        self.console_text = ctk.CTkTextbox(self, height=150, font=("Consolas", 10), 
+                                          fg_color="#1e1e1e", text_color="#d4d4d4",
+                                          border_width=0, corner_radius=8)
+        self.console_text.pack(fill="both", expand=True, padx=10, pady=5)
+        
+        # Copy button
+        self.copy_btn = ctk.CTkButton(self, text="Copy Console", 
+                                     command=self._copy_console,
+                                     width=100, fg_color="#555555", hover_color="#666666",
+                                     font=("Arial", 10))
+        self.copy_btn.pack(anchor="e", padx=10, pady=(0,5))
+        
+        # Store all messages for copying
+        self.messages = []
+    
+    def append(self, message):
+        """Append a message to the console with timestamp."""
+        timestamp = datetime.datetime.now().strftime("%H:%M:%S")
+        formatted = f"[{timestamp}] {message}\n"
+        self.messages.append(formatted)
+        self.console_text.insert("end", formatted)
+        self.console_text.see("end")
+        self.console_text.update_idletasks()
+    
+    def clear(self):
+        """Clear the console."""
+        self.messages.clear()
+        self.console_text.delete("1.0", "end")
+    
+    def _copy_console(self):
+        """Copy the console content to clipboard."""
+        content = self.console_text.get("1.0", "end")
+        self.clipboard_clear()
+        self.clipboard_append(content)
+        # Visual feedback
+        self.copy_btn.configure(text="Copied!", text_color="#4caf50")
+        self.after(2000, lambda: self.copy_btn.configure(text="Copy Console", text_color="white"))
+
+# ----------------------------------------------------------------------
+# Copy helper (for other widgets)
+# ----------------------------------------------------------------------
+def copy_to_clipboard(widget):
+    """Copy the text content of a widget to clipboard."""
+    widget.clipboard_clear()
+    widget.clipboard_append(widget.cget("text"))
+    # Visual feedback on the button
+    widget.configure(text_color="#4caf50")
+
+# ----------------------------------------------------------------------
 # Admin/root check & relaunch
 # ----------------------------------------------------------------------
 def is_admin():
@@ -232,11 +296,11 @@ class GazetteerManager:
         result = ["skip"]
         btn_frame = ctk.CTkFrame(dialog, fg_color="transparent")
         btn_frame.pack(pady=25)
-        ctk.CTkButton(btn_frame, text="✅ Download Now",
+        ctk.CTkButton(btn_frame, text="Download Now",
                       command=lambda: [result.__setitem__(0, "download"), dialog.destroy()],
                       width=140, fg_color=COLORS["accent"], hover_color=COLORS["accent_hover"],
                       font=("Arial", 13)).pack(side="left", padx=10)
-        ctk.CTkButton(btn_frame, text="⏩ Skip (Use Online)",
+        ctk.CTkButton(btn_frame, text="Skip (Use Online)",
                       command=lambda: [result.__setitem__(0, "skip"), dialog.destroy()],
                       width=140, fg_color=COLORS["secondary"], hover_color=COLORS["secondary_hover"],
                       font=("Arial", 13)).pack(side="left", padx=10)
@@ -284,7 +348,7 @@ class GazetteerManager:
             urllib.request.urlretrieve(GAZETTEER_DATA_URL, str(temp), report)
             self.db_path.parent.mkdir(exist_ok=True)
             shutil.move(str(temp), str(self.db_path))
-            self.parent_app.after(0, lambda: self.status_label.configure(text="✅ Complete!", text_color=COLORS["accent"]))
+            self.parent_app.after(0, lambda: self.status_label.configure(text="Complete!", text_color=COLORS["accent"]))
             self.parent_app.after(0, lambda: self.progress_bar.set(1))
             self.parent_app.after(0, lambda: self.percent_label.configure(text="100%"))
             self.parent_app.after(0, lambda: self.cancel_btn.configure(state="disabled"))
@@ -292,10 +356,10 @@ class GazetteerManager:
         except Exception as e:
             if temp and temp.exists(): temp.unlink()
             if str(e) == "Cancelled":
-                self.parent_app.after(0, lambda: self.status_label.configure(text="⛔ Cancelled", text_color=COLORS["text_secondary"]))
+                self.parent_app.after(0, lambda: self.status_label.configure(text="Cancelled", text_color=COLORS["text_secondary"]))
                 self.parent_app.after(2000, self.progress_window.destroy)
             else:
-                self.parent_app.after(0, lambda: self.status_label.configure(text=f"❌ Error: {str(e)}", text_color=COLORS["danger"]))
+                self.parent_app.after(0, lambda: self.status_label.configure(text=f"Error: {str(e)}", text_color=COLORS["danger"]))
                 self.parent_app.after(3000, self.progress_window.destroy)
 
     def _cancel_download(self):
@@ -312,37 +376,108 @@ class GazetteerManager:
             return None
 
 # ----------------------------------------------------------------------
-# Wi‑Fi Scanner (cross‑platform)
+# Self-diagnosing Wi‑Fi Scanner (cross‑platform)
 # ----------------------------------------------------------------------
 class WiFiScanner:
-    def __init__(self):
+    def __init__(self, parent_app):
+        self.parent_app = parent_app
         self.bssids = []
         self.platform = platform.system()
+        self.raw_output = ""
 
     def scan(self):
-        """Scan visible Wi‑Fi access points. Returns list of BSSIDs."""
+        """Scan visible Wi‑Fi access points. Tests multiple regex patterns until one works."""
         self.bssids = []
+        self.raw_output = ""
+        
         if not WIFI_AVAILABLE:
+            self.parent_app.console.append("Wi‑Fi libraries not available – check `subprocess` and `re` imports")
             return []
+
         try:
-            if self.platform == "Linux":
-                # Linux: requires root/sudo
-                output = subprocess.check_output(['sudo', 'iwlist', 'scan'], text=True)
-                matches = re.findall(r'Address: (([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2})', output)
-                self.bssids = [match[0] for match in matches]
-            elif self.platform == "Windows":
-                # Windows: requires admin
-                output = subprocess.check_output(['netsh', 'wlan', 'show', 'networks', 'mode=bssid'], text=True)
-                matches = re.findall(r'BSSID\s+:\s+(([0-9A-Fa-f]{2}-){5}[0-9A-Fa-f]{2})', output)
-                self.bssids = [match.replace('-', ':') for match in matches]
+            if self.platform == "Windows":
+                try:
+                    self.raw_output = subprocess.check_output(
+                        ['netsh', 'wlan', 'show', 'networks', 'mode=bssid'],
+                        text=True
+                    )
+                except:
+                    try:
+                        self.raw_output = subprocess.check_output(
+                            ['netsh', 'wlan', 'show', 'networks', 'mode=bssid', 'format=list'],
+                            text=True
+                        )
+                    except Exception as e:
+                        self.parent_app.console.append(f"Failed to run netsh: {e}")
+                        return []
+
+            elif self.platform == "Linux":
+                try:
+                    self.raw_output = subprocess.check_output(
+                        ['sudo', 'iwlist', 'scan'],
+                        text=True
+                    )
+                except:
+                    try:
+                        self.raw_output = subprocess.check_output(
+                            ['iwlist', 'scan'],
+                            text=True
+                        )
+                    except Exception as e:
+                        self.parent_app.console.append(f"Failed to run iwlist: {e}")
+                        return []
+
             elif self.platform == "Darwin":
-                # macOS
-                output = subprocess.check_output(['airport', '-s'], text=True)
-                matches = re.findall(r'(([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2})', output)
-                self.bssids = [match[0] for match in matches]
-        except:
-            pass
-        return self.bssids
+                try:
+                    self.raw_output = subprocess.check_output(
+                        ['airport', '-s'],
+                        text=True
+                    )
+                except:
+                    try:
+                        self.raw_output = subprocess.check_output(
+                            ['/System/Library/PrivateFrameworks/Apple80211.framework/Versions/Current/Resources/airport', '-s'],
+                            text=True
+                        )
+                    except Exception as e:
+                        self.parent_app.console.append(f"Failed to run airport: {e}")
+                        return []
+
+            # Show raw output in console
+            self.parent_app.console.append(f"Raw Wi‑Fi scan output (first 500 chars):\n{self.raw_output[:500]}...")
+
+            # Define regex patterns to test (from most specific to most general)
+            patterns = [
+                # Windows: BSSID 1 : 68:ff:7b:a9:47:c6
+                r'BSSID\s+\d+\s+:\s+(([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2})',
+                # Windows: BSSID : 68-ff-7b-a9-47-c6
+                r'BSSID\s+:\s+(([0-9A-Fa-f]{2}-){5}[0-9A-Fa-f]{2})',
+                # Windows: BSSID : 68:ff:7b:a9:47:c6
+                r'BSSID\s+:\s+(([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2})',
+                # Linux: Address: 68:ff:7b:a9:47:c6
+                r'Address: (([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2})',
+                # macOS: 68:ff:7b:a9:47:c6 (any line starting with hex)
+                r'(([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2})',
+                # Fallback: any hex with colons or hyphens
+                r'(([0-9A-Fa-f]{2}[: -]){5}[0-9A-Fa-f]{2})'
+            ]
+
+            for i, pattern in enumerate(patterns, 1):
+                matches = re.findall(pattern, self.raw_output)
+                if matches:
+                    self.bssids = [match[0].replace('-', ':') for match in matches]
+                    self.parent_app.console.append(f"Regex pattern #{i} matched: {pattern}")
+                    self.parent_app.console.append(f"Found {len(self.bssids)} BSSIDs: {self.bssids[:5]}")
+                    return self.bssids
+
+            # If we get here, no pattern matched
+            self.parent_app.console.append("No regex patterns matched the output")
+            self.parent_app.console.append("Please check the raw output above and adjust the patterns.")
+
+        except Exception as e:
+            self.parent_app.console.append(f"Error during Wi‑Fi scan: {e}")
+
+        return []
 
     def get_location(self, db_path):
         """Match scanned BSSIDs against a local database and return centroid."""
@@ -370,7 +505,7 @@ class WiFiScanner:
             return None
 
 # ----------------------------------------------------------------------
-# Wi‑Fi Database Builder (self‑calibrating)
+# Wi‑Fi Database Builder (self‑calibrating) with detailed logging
 # ----------------------------------------------------------------------
 class WiFiDatabaseBuilder:
     def __init__(self, parent_app):
@@ -380,7 +515,7 @@ class WiFiDatabaseBuilder:
     def build_or_update_database(self):
         """Build or update Wi‑Fi database using IP location + Wi‑Fi scanning."""
         # 1. Get IP location
-        self.parent_app._set_status("DEBUG: Fetching IP location...", "info")
+        self.parent_app.console.append("Fetching IP location...")
         try:
             resp = requests.get('http://ip-api.com/json/', timeout=10)
             if resp.status_code == 200:
@@ -390,32 +525,32 @@ class WiFiDatabaseBuilder:
                     lon = data['lon']
                     city = data.get('city', 'Unknown')
                     country = data.get('country', 'Unknown')
-                    self.parent_app._set_status(f"DEBUG: IP location found: {city}, {country} ({lat:.4f}, {lon:.4f})", "info")
+                    self.parent_app.console.append(f"IP location found: {city}, {country} ({lat:.4f}, {lon:.4f})")
                 else:
-                    self.parent_app._set_status("DEBUG: IP geolocation failed - API status not success", "error")
+                    self.parent_app.console.append("IP geolocation failed - API status not success")
                     return False
             else:
-                self.parent_app._set_status(f"DEBUG: IP geolocation failed - HTTP {resp.status_code}", "error")
+                self.parent_app.console.append(f"IP geolocation failed - HTTP {resp.status_code}")
                 return False
         except Exception as e:
-            self.parent_app._set_status(f"DEBUG: Error fetching IP location: {e}", "error")
+            self.parent_app.console.append(f"Error fetching IP location: {e}")
             return False
 
         # 2. Scan Wi‑Fi networks
-        self.parent_app._set_status("DEBUG: Scanning for Wi‑Fi networks...", "info")
-        scanner = WiFiScanner()
+        self.parent_app.console.append("Scanning for Wi‑Fi networks...")
+        scanner = WiFiScanner(self.parent_app)
         bssids = scanner.scan()
-        self.parent_app._set_status(f"DEBUG: Found {len(bssids)} access points", "info")
+        self.parent_app.console.append(f"Found {len(bssids)} access points")
 
         if not bssids:
-            self.parent_app._set_status("DEBUG: No Wi‑Fi networks found", "error")
+            self.parent_app.console.append("No Wi‑Fi networks found")
             return False
 
         # 3. Build/update database
-        self.parent_app._set_status("DEBUG: Creating/updating database...", "info")
+        self.parent_app.console.append("Creating/updating Wi‑Fi database...")
         try:
             if self.db_path.exists():
-                self.parent_app._set_status("DEBUG: Database already exists. Updating...", "info")
+                self.parent_app.console.append("Updating existing database...")
                 conn = sqlite3.connect(str(self.db_path))
                 cursor = conn.cursor()
                 # Create table if it doesn't exist
@@ -427,20 +562,15 @@ class WiFiDatabaseBuilder:
                         timestamp INTEGER
                     )
                 ''')
-                # Add new BSSIDs
                 for bssid in bssids:
-                    try:
-                        cursor.execute('INSERT OR REPLACE INTO access_points VALUES (?, ?, ?, ?)',
-                                      (bssid, lat, lon, int(time.time())))
-                    except Exception as e:
-                        self.parent_app._set_status(f"DEBUG: Error inserting BSSID {bssid}: {e}", "error")
-                        return False
+                    cursor.execute('INSERT OR REPLACE INTO access_points VALUES (?, ?, ?, ?)',
+                                  (bssid, lat, lon, int(time.time())))
                 conn.commit()
                 conn.close()
-                self.parent_app._set_status("DEBUG: Database updated successfully", "success")
+                self.parent_app.console.append(f"Database updated with {len(bssids)} new BSSIDs")
             else:
-                self.parent_app._set_status("DEBUG: Creating new database...", "info")
-                conn = sqlite3.connect(str(self.db_path))
+                self.parent_app.console.append("Creating new database...")
+                conn = sqlite3.connect(str(WIFI_DB_PATH))
                 cursor = conn.cursor()
                 cursor.execute('''
                     CREATE TABLE IF NOT EXISTS access_points (
@@ -451,18 +581,17 @@ class WiFiDatabaseBuilder:
                     )
                 ''')
                 for bssid in bssids:
-                    try:
-                        cursor.execute('INSERT OR REPLACE INTO access_points VALUES (?, ?, ?, ?)',
-                                      (bssid, lat, lon, int(time.time())))
-                    except Exception as e:
-                        self.parent_app._set_status(f"DEBUG: Error inserting BSSID {bssid}: {e}", "error")
-                        return False
+                    cursor.execute('INSERT OR REPLACE INTO access_points VALUES (?, ?, ?, ?)',
+                                  (bssid, lat, lon, int(time.time())))
                 conn.commit()
                 conn.close()
-                self.parent_app._set_status("DEBUG: New database created successfully", "success")
+                self.parent_app.console.append(f"New database created with {len(bssids)} BSSIDs")
             return True
+        except PermissionError:
+            self.parent_app.console.append("Permission denied when writing database file")
+            return False
         except Exception as e:
-            self.parent_app._set_status(f"DEBUG: Error creating/updating database: {e}", "error")
+            self.parent_app.console.append(f"Error building database: {e}")
             return False
 
 # ----------------------------------------------------------------------
@@ -553,7 +682,7 @@ class App(ctk.CTk):
     def __init__(self):
         super().__init__()
         self.title(APP_TITLE)
-        self.geometry("800x650")
+        self.geometry("900x750")
         self.configure(fg_color=COLORS["bg"])
         ctk.set_appearance_mode(DEFAULT_APPEARANCE)
         ctk.set_default_color_theme(DEFAULT_THEME)
@@ -572,7 +701,6 @@ class App(ctk.CTk):
         self.gazetteer = None
         self.use_gazetteer = False
 
-        self.wifi_scanner = WiFiScanner()
         self.wifi_builder = WiFiDatabaseBuilder(self)
         self.gps_reader = GPSReader(self)
 
@@ -603,50 +731,54 @@ class App(ctk.CTk):
 
     def _create_widgets(self):
         main_frame = ctk.CTkFrame(self, fg_color="transparent")
-        main_frame.pack(fill="both", expand=True, padx=30, pady=30)
+        main_frame.pack(fill="both", expand=True, padx=20, pady=20)
 
         # Header
         header_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
-        header_frame.pack(fill="x", pady=(0,20))
-        title = ctk.CTkLabel(header_frame, text="🧭 Magnetic Declination Calculator",
+        header_frame.pack(fill="x", pady=(0,15))
+        title = ctk.CTkLabel(header_frame, text="Magnetic Declination Calculator",
                              font=("Arial", 24, "bold"), text_color=COLORS["text_primary"])
         title.pack(side="left")
         ToolTip(title, "Calculate magnetic declination for any location on Earth")
-        self.btn_help = ctk.CTkButton(header_frame, text="❓ Help", command=self._show_help,
+        self.btn_help = ctk.CTkButton(header_frame, text="Help", command=self._show_help,
                                       width=80, fg_color="transparent", hover_color=COLORS["card_bg"],
                                       text_color=COLORS["text_secondary"], font=("Arial", 12))
         self.btn_help.pack(side="right")
 
+        # Console panel
+        self.console = ConsolePanel(main_frame)
+        self.console.pack(fill="both", expand=True, pady=(0,10))
+
         # Card: Location Input
         loc_card = ctk.CTkFrame(main_frame, fg_color=COLORS["card_bg"], corner_radius=12,
                                 border_width=1, border_color=COLORS["card_border"])
-        loc_card.pack(fill="x", pady=(0,15))
-        ctk.CTkLabel(loc_card, text="📍 Location Input", font=("Arial", 14, "bold"),
-                     text_color=COLORS["text_primary"]).pack(anchor="w", padx=20, pady=(15,5))
+        loc_card.pack(fill="x", pady=(0,10))
+        ctk.CTkLabel(loc_card, text="Location Input", font=("Arial", 14, "bold"),
+                     text_color=COLORS["text_primary"]).pack(anchor="w", padx=15, pady=(10,5))
 
         addr_frame = ctk.CTkFrame(loc_card, fg_color="transparent")
-        addr_frame.pack(fill="x", padx=20, pady=5)
+        addr_frame.pack(fill="x", padx=15, pady=5)
         self.entry_address = ctk.CTkEntry(addr_frame, placeholder_text="Street address, city, country",
-                                          width=400, font=("Arial", 12))
+                                          width=350, font=("Arial", 12))
         self.entry_address.pack(side="left", padx=(0,10))
         ToolTip(self.entry_address, "Type a full address and click 'Get from Address'")
-        self.btn_address = ctk.CTkButton(addr_frame, text="📍 Get from Address",
+        self.btn_address = ctk.CTkButton(addr_frame, text="Get from Address",
                                          command=self._on_get_from_address,
-                                         width=150, fg_color=COLORS["accent"],
+                                         width=120, fg_color=COLORS["accent"],
                                          hover_color=COLORS["accent_hover"],
                                          font=("Arial", 12))
         self.btn_address.pack(side="left")
         ToolTip(self.btn_address, "Forward geocode the address (online)")
 
-        ctk.CTkFrame(loc_card, height=1, fg_color=COLORS["card_border"]).pack(fill="x", padx=20, pady=10)
+        ctk.CTkFrame(loc_card, height=1, fg_color=COLORS["card_border"]).pack(fill="x", padx=15, pady=5)
 
         method_frame = ctk.CTkFrame(loc_card, fg_color="transparent")
-        method_frame.pack(fill="x", padx=20, pady=5)
+        method_frame.pack(fill="x", padx=15, pady=5)
 
         # Main button: Locate & Calculate (single press)
-        self.btn_locate = ctk.CTkButton(method_frame, text="📍 Locate & Calculate Declination",
+        self.btn_locate = ctk.CTkButton(method_frame, text="Locate & Calculate Declination",
                                         command=self._on_locate_and_calculate,
-                                        width=400, fg_color=COLORS["accent"],
+                                        width=350, fg_color=COLORS["accent"],
                                         hover_color=COLORS["accent_hover"],
                                         font=("Arial", 14, "bold"))
         self.btn_locate.pack(side="left", padx=(0,10))
@@ -676,11 +808,11 @@ class App(ctk.CTk):
         # Card: Coordinates & Precision
         coord_card = ctk.CTkFrame(main_frame, fg_color=COLORS["card_bg"], corner_radius=12,
                                   border_width=1, border_color=COLORS["card_border"])
-        coord_card.pack(fill="x", pady=(0,15))
-        ctk.CTkLabel(coord_card, text="📍 Current Coordinates", font=("Arial", 14, "bold"),
-                     text_color=COLORS["text_primary"]).pack(anchor="w", padx=20, pady=(15,5))
+        coord_card.pack(fill="x", pady=(0,10))
+        ctk.CTkLabel(coord_card, text="Current Coordinates", font=("Arial", 14, "bold"),
+                     text_color=COLORS["text_primary"]).pack(anchor="w", padx=15, pady=(10,5))
         disp_frame = ctk.CTkFrame(coord_card, fg_color="transparent")
-        disp_frame.pack(fill="x", padx=20, pady=5)
+        disp_frame.pack(fill="x", padx=15, pady=5)
         self.lbl_coords = ctk.CTkLabel(disp_frame, text="Coordinates: Not set",
                                        font=("Arial", 13), text_color=COLORS["text_secondary"])
         self.lbl_coords.pack(side="left")
@@ -688,35 +820,33 @@ class App(ctk.CTk):
                                           font=("Arial", 12), text_color="#888888")
         self.lbl_precision.pack(side="right")
 
-        self.lbl_gazetteer = ctk.CTkLabel(coord_card, text="📡 Offline Gazetteer: ⏳ Initializing...",
+        self.lbl_gazetteer = ctk.CTkLabel(coord_card, text="Offline Gazetteer: Initializing...",
                                           font=("Arial", 11), text_color="#888888")
-        self.lbl_gazetteer.pack(anchor="w", padx=20, pady=(0,15))
+        self.lbl_gazetteer.pack(anchor="w", padx=15, pady=(0,5))
 
         # Card: Result
         result_card = ctk.CTkFrame(main_frame, fg_color=COLORS["card_bg"], corner_radius=12,
                                    border_width=1, border_color=COLORS["card_border"])
-        result_card.pack(fill="x", pady=(0,15))
-        ctk.CTkLabel(result_card, text="🧮 Declination Result", font=("Arial", 14, "bold"),
-                     text_color=COLORS["text_primary"]).pack(anchor="w", padx=20, pady=(15,5))
+        result_card.pack(fill="x", pady=(0,10))
+        ctk.CTkLabel(result_card, text="Declination Result", font=("Arial", 14, "bold"),
+                     text_color=COLORS["text_primary"]).pack(anchor="w", padx=15, pady=(10,5))
         self.lbl_result = ctk.CTkEntry(result_card, font=("Arial", 18, "bold"),
                                        text_color=COLORS["gold"], border_width=0,
                                        fg_color=COLORS["card_bg"],
                                        justify="center",
-                                       state="readonly", width=450)
+                                       state="readonly", width=400)
         self.lbl_result.insert(0, "Declination: 0.00°")
         self.lbl_result.pack(pady=10)
         self.lbl_result.bind("<Double-Button-1>", lambda e: [self.lbl_result.select_range(0,"end"), "break"])
         ToolTip(self.lbl_result, "Double-click to copy")
 
-        # Bottom status bar
-        status_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
-        status_frame.pack(fill="x")
-        self.lbl_status_bottom = ctk.CTkEntry(status_frame, font=("Arial", 11),
+        # Bottom status bar (RESTORED)
+        self.lbl_status_bottom = ctk.CTkEntry(main_frame, font=("Arial", 11),
                                               text_color="gray", border_width=0,
                                               fg_color="transparent", justify="center",
-                                              state="readonly", width=450)
+                                              state="readonly", width=400)
         self.lbl_status_bottom.insert(0, "Ready")
-        self.lbl_status_bottom.pack()
+        self.lbl_status_bottom.pack(pady=5)
         self.lbl_status_bottom.bind("<Double-Button-1>", lambda e: [self.lbl_status_bottom.select_range(0,"end"), "break"])
 
     def _show_help(self):
@@ -726,17 +856,17 @@ class App(ctk.CTk):
         dialog.attributes("-topmost", True)
         dialog.grab_set()
         dialog.configure(fg_color=COLORS["bg"])
-        title = ctk.CTkLabel(dialog, text="🧭 Help – Magnetic Declination Calculator",
+        title = ctk.CTkLabel(dialog, text="Help – Magnetic Declination Calculator",
                              font=("Arial", 18, "bold"), text_color=COLORS["text_primary"])
         title.pack(pady=(20,10))
         text = """
-        📍 Locate & Calculate – One‑press button:
+        Locate & Calculate – One‑press button:
            1. If Wi‑Fi database exists → gets location via Wi‑Fi (100‑500 m)
            2. If no database exists → creates database using IP + Wi‑Fi scan, then uses it
            3. Calculates declination using the final location
 
         Alternative methods:
-        📍 Get from Address – Street level (online Nominatim).
+        Get from Address – Street level (online Nominatim).
         Manual coordinates – Exact (user input).
 
         Offline reverse geocoding via Gazetteer: shows nearest city/town/district.
@@ -761,15 +891,70 @@ class App(ctk.CTk):
         self.lbl_status_bottom.insert(0, message)
         self.lbl_status_bottom.configure(state="readonly", text_color=color)
 
+    def _check_wifi_adapter_status(self):
+        """Check if Wi‑Fi adapter is enabled and connected."""
+        current_platform = platform.system()
+        
+        if current_platform == "Windows":
+            try:
+                # Check if Wi‑Fi adapter is enabled
+                output = subprocess.check_output(['netsh', 'wlan', 'show', 'interfaces'], text=True)
+                
+                # Check if any interface is enabled and connected
+                if "State" in output:
+                    lines = output.splitlines()
+                    for line in lines:
+                        if "State" in line:
+                            state = line.split(':')[1].strip()
+                            if state == "connected":
+                                return True, "connected"
+                            elif state == "disconnected":
+                                return True, "disconnected"
+                            elif state == "disabled":
+                                return False, "disabled"
+                else:
+                    return False, "not_found"
+            except Exception as e:
+                return False, "error"
+        
+        elif current_platform == "Linux":
+            try:
+                # Check if Wi‑Fi interface exists and is up
+                output = subprocess.check_output(['ip', 'link'], text=True)
+                if 'wlan' in output or 'wlp' in output:
+                    # Check if any interface is up
+                    for line in output.splitlines():
+                        if 'wlan' in line or 'wlp' in line:
+                            if 'UP' in line:
+                                return True, "enabled"
+                    return True, "down"
+                else:
+                    return False, "not_found"
+            except Exception as e:
+                return False, "error"
+        
+        elif current_platform == "Darwin":
+            try:
+                # Check if Wi‑Fi is enabled
+                output = subprocess.check_output(['networksetup', '-getairportpower', 'en0'], text=True)
+                if 'On' in output:
+                    return True, "enabled"
+                else:
+                    return False, "disabled"
+            except Exception as e:
+                return False, "error"
+        
+        return False, "unknown"
+
     def _initialize_gazetteer(self):
         self.gazetteer = self.gazetteer_manager.ensure_database()
         self.use_gazetteer = self.gazetteer is not None
         if self.use_gazetteer:
             self._set_status("Gazetteer loaded (offline reverse geocoding)", "success")
-            self.lbl_gazetteer.configure(text="📡 Offline Gazetteer: ✅ Loaded", text_color=COLORS["accent"])
+            self.lbl_gazetteer.configure(text="Offline Gazetteer: Loaded", text_color=COLORS["accent"])
         else:
             self._set_status("Using online reverse geocoding (Gazetteer not available).", "warning")
-            self.lbl_gazetteer.configure(text="📡 Offline Gazetteer: ❌ Not available (using online)", text_color=COLORS["gold"])
+            self.lbl_gazetteer.configure(text="Offline Gazetteer: Not available (using online)", text_color=COLORS["gold"])
 
     def _set_precision(self, level, detail=""):
         self.lbl_precision.configure(text=f"Precision: {level}" + (f" ({detail})" if detail else ""))
@@ -790,19 +975,33 @@ class App(ctk.CTk):
         return None, None, None
 
     def _reverse_geocode(self, lat, lon):
-        if self.use_gazetteer and self.gazetteer:
-            try:
-                for place in self.gazetteer.search([(lon, lat)]):  # ← no limit
-                    if place:
-                        return f"{place.result.name}, {place.result.admin2}, {place.result.admin1}"
-            except Exception as e:
-                print(f"Gazetteer reverse error: {e}")
+        """Reverse geocode: (lat, lon) -> nearest address using primarily Nominatim for street-level addresses."""
+        # Try Nominatim first (online, gives street-level addresses)
+        self.console.append(f"Trying Nominatim reverse geocode for {lat:.6f}, {lon:.6f}...")
         try:
             g = geocoder.reverse((lat, lon), method='nominatim', user_agent=NOMINAT_USER_AGENT)
             if g.ok:
-                return g.address
+                address = g.address
+                self.console.append(f"Nominatim returned: {address}")
+                return address
+            else:
+                self.console.append("Nominatim returned no result")
         except Exception as e:
-            print(f"Online reverse error: {e}")
+            self.console.append(f"Nominatim error: {e}")
+        
+        # Fallback to Gazetteer (offline, gives city/district level)
+        if self.use_gazetteer and self.gazetteer:
+            self.console.append("Falling back to Gazetteer (offline)...")
+            try:
+                for place in self.gazetteer.search([(lon, lat)]):
+                    if place:
+                        address = f"{place.result.name}, {place.result.admin2}, {place.result.admin1}"
+                        self.console.append(f"Gazetteer returned: {address}")
+                        return address
+            except Exception as e:
+                self.console.append(f"Gazetteer error: {e}")
+        
+        self.console.append("No address found from any source")
         return None
 
     def _on_clear(self):
@@ -817,48 +1016,117 @@ class App(ctk.CTk):
         self.entry_lat.delete(0, "end")
         self.entry_lon.delete(0, "end")
         self.entry_address.delete(0, "end")
+        self.console.clear()
+        self.console.append("All cleared. Ready.")
         self._set_status("All cleared. Ready.", "info")
 
     def _on_locate_and_calculate(self):
         """One‑press button: get location (Wi‑Fi or IP) and calculate declination."""
+        self.console.clear()
+        self.console.append("[START] Beginning location + calculation workflow")
         self._set_status("Locating...", "info")
         self.update_idletasks()
 
-        # Step 1: Check if Wi‑Fi database exists
-        db_exists = WIFI_DB_PATH.exists()
-        self._set_status(f"Step 1: Wi‑Fi database exists? {db_exists}", "info")
+        # Step 0: Enhanced admin privilege check
+        self.console.append("[PRIVILEGES] Verifying admin/root privileges...")
+        if not is_admin():
+            self.console.append("[PRIVILEGES] Not running with admin/root privileges")
+            self.console.append("SOLUTION: Click 'Reload as Admin' or run the script as Administrator (Windows) or with sudo (Linux/macOS)")
+            self._set_status("Privilege check failed. Please run as Administrator.", "error")
+            return
+        self.console.append("[PRIVILEGES] Python process has admin/root privileges")
 
-        # Step 2: Get location - TRY Wi‑Fi first if database exists
+        # Step 1: Check Wi‑Fi adapter status
+        self.console.append("[WIFI_ADAPTER] Checking Wi‑Fi adapter status...")
+        wifi_ok, wifi_status = self._check_wifi_adapter_status()
+        if not wifi_ok:
+            self.console.append(f"[WIFI_ADAPTER] Wi‑Fi adapter check failed: {wifi_status}")
+            self.console.append("SOLUTION: Enable Wi‑Fi and try again")
+            self._set_status(f"Wi‑Fi adapter check failed: {wifi_status}. Using IP only.", "warning")
+            # Fall back to IP
+            self._on_get_ip()
+            if self.latitude is not None:
+                self._on_calculate()
+            return
+        self.console.append("[WIFI_ADAPTER] Wi‑Fi adapter is enabled and connected")
+
+        # Step 2: Check if Wi‑Fi database exists
+        self.console.append("[DATABASE] Checking if Wi‑Fi database exists...")
+        db_exists = WIFI_DB_PATH.exists()
         if db_exists:
-            self._set_status("Step 2: Scanning Wi‑Fi networks...", "info")
-            bssids = self.wifi_scanner.scan()
-            self._set_status(f"Step 2: Found {len(bssids)} access points", "info")
+            try:
+                conn = sqlite3.connect(str(WIFI_DB_PATH))
+                cursor = conn.cursor()
+                cursor.execute('SELECT COUNT(*) FROM access_points')
+                count = cursor.fetchone()[0]
+                conn.close()
+                self.console.append(f"[DATABASE] Wi‑Fi database exists and contains {count} access points")
+            except:
+                self.console.append("[DATABASE] Wi‑Fi database exists but is corrupted")
+                self.console.append("SOLUTION: Delete wifi_location.db and let the app rebuild it")
+                db_exists = False
+        else:
+            self.console.append("[DATABASE] Wi‑Fi database does not exist - will be built automatically")
+
+        # Step 3: Try Wi‑Fi location if database exists
+        if db_exists:
+            self.console.append("[WIFI] Scanning for Wi‑Fi networks...")
+            scanner = WiFiScanner(self)
+            bssids = scanner.scan()
+            self.console.append(f"Found {len(bssids)} access points")
             
             if bssids:
-                self._set_status("Step 2: Matching BSSIDs against database...", "info")
-                location = self.wifi_scanner.get_location(WIFI_DB_PATH)
+                self.console.append("[WIFI] Attempting to match BSSIDs against database...")
+                location = scanner.get_location(WIFI_DB_PATH)
                 if location:
                     lat, lon = location
                     address = self._reverse_geocode(lat, lon)
-                    address_detail = f"Nearest: {address[:100]}" if address else ""
+                    if address:
+                        # Check if the address contains a street name or building
+                        address_parts = address.split(',')
+                        if len(address_parts) >= 3:
+                            # If we have at least 3 parts, it might be a street address
+                            street_part = address_parts[0].strip()
+                            # Check if the first part looks like a street address (contains a number or common street words)
+                            if any(char.isdigit() for char in street_part) or any(word in street_part.lower() for word in ['street', 'st', 'avenue', 'ave', 'road', 'rd', 'lane', 'ln', 'drive', 'dr', 'court', 'ct', 'place', 'pl', 'way']):
+                                # This is likely a street address
+                                address_detail = f"{address}"
+                                self.console.append(f"{address_detail}")
+                                self._set_precision("Wi‑Fi Location (100‑500 m)", address_detail)
+                            else:
+                                # Just a city/district name
+                                address_detail = f"Nearest: {address}"
+                                self.console.append(f"{address_detail}")
+                                self._set_precision("Wi‑Fi Location (100‑500 m)", address_detail)
+                        else:
+                            # Too few parts, just show the address
+                            address_detail = f"Nearest: {address}"
+                            self.console.append(f"{address_detail}")
+                            self._set_precision("Wi‑Fi Location (100‑500 m)", address_detail)
+                    else:
+                        address_detail = ""
+                        self.console.append("No address found for this location")
+                    
                     self._set_coordinates(lat, lon, "Wi‑Fi Location (100‑500 m)", f"Based on {len(bssids)} access points")
-                    self._set_status(f"✅ Success! Location via Wi‑Fi: {lat:.6f}, {lon:.6f} (100‑500 m accuracy)", "success")
-                    self._set_precision("Wi‑Fi Location (100‑500 m)", address_detail)
+                    self._set_status("Location via Wi‑Fi", "success")
+                    self.console.append(f"[WIFI] Location found via Wi‑Fi: {lat:.6f}, {lon:.6f}")
+                    self.console.append("[WIFI] Wi‑Fi positioning successful")
                     self._on_calculate()
                     return
                 else:
-                    self._set_status("❌ No matching Wi‑Fi access points in database. Proceeding to rebuild...", "error")
+                    self.console.append("[WIFI] No matching BSSIDs in database")
+                    self.console.append("SOLUTION: Rebuild database by moving to a different location and running again")
             else:
-                self._set_status("❌ No Wi‑Fi networks found. Proceeding to rebuild...", "error")
+                self.console.append("[WIFI] No Wi‑Fi networks found")
+                self.console.append("SOLUTION: Run as Administrator (Windows) or with sudo (Linux/macOS)")
 
-        # Step 3: If no database or no match, build/update database with IP location
-        self._set_status("Step 3: Checking admin privileges...", "info")
-        if not is_admin():
-            self._set_status("❌ Admin/root required to build Wi‑Fi database.", "error")
-            return
+        # Step 4: If no database or no Wi‑Fi match, build/update database with IP location
+        self.console.append("[BUILD] Building/updating Wi‑Fi database using IP location...")
+        self._set_status("Building/updating Wi‑Fi database using IP location...", "info")
+        self.update_idletasks()
 
-        self._set_status("Step 3: Fetching IP location to seed database...", "info")
-        ip_lat, ip_lon = None, None
+        # Get IP location first
+        self.console.append("[IP] Fetching IP location...")
         try:
             resp = requests.get('http://ip-api.com/json/', timeout=10)
             if resp.status_code == 200:
@@ -868,57 +1136,151 @@ class App(ctk.CTk):
                     ip_lon = data['lon']
                     city = data.get('city', 'Unknown')
                     country = data.get('country', 'Unknown')
-                    self._set_status(f"Seeding database with IP location: {city}, {country} ({ip_lat:.4f}, {ip_lon:.4f})", "info")
+                    self.console.append(f"[IP] IP location found: {city}, {country} ({ip_lat:.4f}, {ip_lon:.4f})")
                 else:
-                    self._set_status("❌ IP geolocation failed. Cannot build database.", "error")
+                    self.console.append("[IP] IP geolocation API returned 'status' != 'success'")
+                    self.console.append("SOLUTION: Check your internet connection or try a different IP service")
                     return
             else:
-                self._set_status(f"❌ IP geolocation failed (HTTP {resp.status_code})", "error")
+                self.console.append(f"[IP] IP geolocation API returned HTTP {resp.status_code}")
+                self.console.append("SOLUTION: Check your internet connection")
                 return
+        except requests.exceptions.ConnectionError:
+            self.console.append("[IP] No internet connection")
+            self.console.append("SOLUTION: Connect to the internet for IP location, or use manual coordinates")
+            return
         except Exception as e:
-            self._set_status(f"❌ Error fetching IP location: {e}", "error")
+            self.console.append(f"[IP] Error fetching IP location: {e}")
+            self.console.append("SOLUTION: Check your internet connection")
             return
 
-        self._set_status("Step 3: Building/updating Wi‑Fi database...", "info")
-        success = self.wifi_builder.build_or_update_database()
-        if not success:
-            self._set_status("❌ Failed to build Wi‑Fi database. Falling back to IP...", "error")
-            if ip_lat is not None:
-                self._set_coordinates(ip_lat, ip_lon, "IP (5‑50 km)", "Fallback - Database build failed")
-                self._set_status(f"Using IP location: {ip_lat:.6f}, {ip_lon:.6f} (5‑50 km accuracy)", "warning")
-                self._on_calculate()
+        # Scan Wi‑Fi networks
+        self.console.append("[WIFI] Scanning for Wi‑Fi networks...")
+        scanner = WiFiScanner(self)
+        bssids = scanner.scan()
+        self.console.append(f"Found {len(bssids)} access points")
+        
+        if not bssids:
+            self.console.append("[WIFI] No Wi‑Fi networks found")
+            self.console.append("SOLUTION: Run as Administrator (Windows) or with sudo (Linux/macOS)")
+            self._set_coordinates(ip_lat, ip_lon, "IP (5‑50 km)", "No Wi‑Fi networks found")
+            self._set_status(f"Using IP location: {ip_lat:.6f}, {ip_lon:.6f}", "warning")
+            self.console.append("[FINAL] Using IP location (no Wi‑Fi networks found)")
+            self._on_calculate()
             return
 
-        # Step 4: Use the newly built database
-        self._set_status("Step 4: Database built. Getting location via Wi‑Fi...", "info")
-        bssids = self.wifi_scanner.scan()
-        self._set_status(f"Step 4: Found {len(bssids)} access points", "info")
+        # Build the database
+        self.console.append("[BUILD] Creating/updating Wi‑Fi database...")
+        try:
+            if WIFI_DB_PATH.exists():
+                self.console.append("[BUILD] Updating existing database...")
+                conn = sqlite3.connect(str(WIFI_DB_PATH))
+                cursor = conn.cursor()
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS access_points (
+                        bssid TEXT PRIMARY KEY,
+                        lat REAL,
+                        lon REAL,
+                        timestamp INTEGER
+                    )
+                ''')
+                for bssid in bssids:
+                    cursor.execute('INSERT OR REPLACE INTO access_points VALUES (?, ?, ?, ?)',
+                                  (bssid, ip_lat, ip_lon, int(time.time())))
+                conn.commit()
+                conn.close()
+                self.console.append(f"[BUILD] Database updated with {len(bssids)} new BSSIDs")
+            else:
+                self.console.append("[BUILD] Creating new database...")
+                conn = sqlite3.connect(str(WIFI_DB_PATH))
+                cursor = conn.cursor()
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS access_points (
+                        bssid TEXT PRIMARY KEY,
+                        lat REAL,
+                        lon REAL,
+                        timestamp INTEGER
+                    )
+                ''')
+                for bssid in bssids:
+                    cursor.execute('INSERT OR REPLACE INTO access_points VALUES (?, ?, ?, ?)',
+                                  (bssid, ip_lat, ip_lon, int(time.time())))
+                conn.commit()
+                conn.close()
+                self.console.append(f"[BUILD] New database created with {len(bssids)} BSSIDs")
+        except PermissionError:
+            self.console.append("[BUILD] Permission denied when writing database file")
+            self.console.append("SOLUTION: Check that the script has write permissions in the current directory")
+            self._set_coordinates(ip_lat, ip_lon, "IP (5‑50 km)", "Database build failed - permission denied")
+            self._set_status(f"Using IP location: {ip_lat:.6f}, {ip_lon:.6f}", "warning")
+            self.console.append("[FINAL] Using IP location (permission denied)")
+            self._on_calculate()
+            return
+        except Exception as e:
+            self.console.append(f"[BUILD] Error building database: {e}")
+            self.console.append("SOLUTION: Check error message and fix the underlying issue")
+            self._set_coordinates(ip_lat, ip_lon, "IP (5‑50 km)", "Database build failed")
+            self._set_status(f"Using IP location: {ip_lat:.6f}, {ip_lon:.6f}", "warning")
+            self.console.append("[FINAL] Using IP location (database build failed)")
+            self._on_calculate()
+            return
+
+        # Step 5: Use the newly built database
+        self.console.append("[WIFI] Using newly built database...")
+        scanner = WiFiScanner(self)
+        bssids = scanner.scan()
+        self.console.append(f"Found {len(bssids)} access points")
         
         if bssids:
-            self._set_status("Step 4: Matching BSSIDs against new database...", "info")
-            location = self.wifi_scanner.get_location(WIFI_DB_PATH)
+            location = scanner.get_location(WIFI_DB_PATH)
             if location:
                 lat, lon = location
                 address = self._reverse_geocode(lat, lon)
-                address_detail = f"Nearest: {address[:100]}" if address else ""
+                if address:
+                    # Check if the address contains a street name or building
+                    address_parts = address.split(',')
+                    if len(address_parts) >= 3:
+                        # If we have at least 3 parts, it might be a street address
+                        street_part = address_parts[0].strip()
+                        # Check if the first part looks like a street address (contains a number or common street words)
+                        if any(char.isdigit() for char in street_part) or any(word in street_part.lower() for word in ['street', 'st', 'avenue', 'ave', 'road', 'rd', 'lane', 'ln', 'drive', 'dr', 'court', 'ct', 'place', 'pl', 'way']):
+                            # This is likely a street address
+                            address_detail = f"{address}"
+                            self.console.append(f"{address_detail}")
+                            self._set_precision("Wi‑Fi Location (100‑500 m)", address_detail)
+                        else:
+                            # Just a city/district name
+                            address_detail = f"Nearest: {address}"
+                            self.console.append(f"{address_detail}")
+                            self._set_precision("Wi‑Fi Location (100‑500 m)", address_detail)
+                    else:
+                        # Too few parts, just show the address
+                        address_detail = f"Nearest: {address}"
+                        self.console.append(f"{address_detail}")
+                        self._set_precision("Wi‑Fi Location (100‑500 m)", address_detail)
+                else:
+                    address_detail = ""
+                    self.console.append("No address found for this location")
+                
                 self._set_coordinates(lat, lon, "Wi‑Fi Location (100‑500 m)", f"Based on {len(bssids)} access points")
-                self._set_status(f"✅ Success! Location via Wi‑Fi: {lat:.6f}, {lon:.6f} (100‑500 m accuracy)", "success")
-                self._set_precision("Wi‑Fi Location (100‑500 m)", address_detail)
+                self._set_status("Location via Wi‑Fi", "success")
+                self.console.append(f"[WIFI] Location found via Wi‑Fi (new database): {lat:.6f}, {lon:.6f}")
+                self.console.append("[WIFI] Wi‑Fi positioning successful")
                 self._on_calculate()
                 return
             else:
-                self._set_status("❌ No matching access points in new database. Falling back to IP...", "error")
+                self.console.append("[WIFI] No matching access points in new database")
+                self.console.append("SOLUTION: Try building database in a different location")
         else:
-            self._set_status("❌ No Wi‑Fi networks found. Falling back to IP...", "error")
+            self.console.append("[WIFI] No Wi‑Fi networks found after database build")
+            self.console.append("SOLUTION: Run as Administrator (Windows) or with sudo (Linux/macOS)")
 
-        # Step 5: Final fallback to IP
-        self._set_status("Step 5: Final fallback to IP", "info")
-        if ip_lat is not None:
-            self._set_coordinates(ip_lat, ip_lon, "IP (5‑50 km)", "Fallback - No Wi‑Fi match")
-            self._set_status(f"Using IP location: {ip_lat:.6f}, {ip_lon:.6f} (5‑50 km accuracy)", "warning")
-            self._on_calculate()
-        else:
-            self._set_status("❌ No IP location available. Please set location manually.", "error")
+        # Step 6: Final fallback to IP
+        self.console.append("[FINAL] Falling back to IP location")
+        self.console.append("SOLUTION: Wi‑Fi positioning failed. Check your Wi‑Fi adapter and permissions.")
+        self._set_coordinates(ip_lat, ip_lon, "IP (5‑50 km)", "Fallback")
+        self._set_status(f"Using IP location: {ip_lat:.6f}, {ip_lon:.6f}", "warning")
+        self._on_calculate()
 
     def _on_get_from_address(self):
         a = self.entry_address.get().strip()

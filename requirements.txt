@@ -1,8 +1,8 @@
 customtkinter
 geocoder
 geomag
+geopandas
 pynmea2
 pyserial 
-python-gazetteer
 requests
 wifi

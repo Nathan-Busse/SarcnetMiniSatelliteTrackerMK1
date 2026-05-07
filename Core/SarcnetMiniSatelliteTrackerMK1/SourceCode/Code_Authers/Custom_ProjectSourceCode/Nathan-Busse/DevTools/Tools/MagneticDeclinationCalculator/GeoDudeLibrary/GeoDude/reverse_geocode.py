@@ -139,7 +139,7 @@ class geodude:
 
         return [lookup.get(shape_id) for shape_id in filters]
 
-    def geo_contains(self, search_location: [float, float], indexes: list[int]) -> GeocoderResultBaseModel:
+    def geo_contains(self, search_location: tuple[float, float], indexes: list[int]) -> GeocoderResultBaseModel:
         """
         Verifies whether the location taken from indexes contains the given search_location
         params:

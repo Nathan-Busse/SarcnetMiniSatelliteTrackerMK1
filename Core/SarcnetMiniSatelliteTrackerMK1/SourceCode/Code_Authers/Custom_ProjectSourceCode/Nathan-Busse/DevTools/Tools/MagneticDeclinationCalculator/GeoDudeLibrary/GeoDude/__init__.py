@@ -1,2 +1,1 @@
-from .reverse_geocode import ReverseGeocoder
-__all__ = ['ReverseGeocoder']
+from geodude.reverse_geocode import geodude as geodude

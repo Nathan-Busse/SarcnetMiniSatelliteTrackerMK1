@@ -36,31 +36,23 @@
 │               │       │   │       │   ├── 📄 .gitkeep
 │               │       │   │       │   ├── 📄 .pre-commit-config.yaml
 │               │       │   │       │   ├── 📄 .readthedocs.yaml
-│               │       │   │       │   ├── 📁 GeoDude/
-│               │       │   │       │   │   ├── 📁 GeoDude_DB/
-│               │       │   │       │   │   │   ├── 📄 .gitkeep
-│               │       │   │       │   │   │   ├── 📁 build_adm3_db/
-│               │       │   │       │   │   │   │   ├── 📄 .gitkeep
-│               │       │   │       │   │   │   │   └── 📄 build_adm3_db.py
-│               │       │   │       │   │   │   └── 📁 download_geoBoundries_ADM3/
-│               │       │   │       │   │   │       ├── 📄 .gitkeep
-│               │       │   │       │   │   │       └── 📄 download_geoBoundries_ADM3.py
+│               │       │   │       │   ├── 📁 geodude/
+│               │       │   │       │   │   ├── 📁 data/
+│               │       │   │       │   │   │   ├── 📄 data.db
+│               │       │   │       │   │   │   └── 📄 geo-boundaries.csv
 │               │       │   │       │   │   ├── 📄 KD_Tree.py
 │               │       │   │       │   │   ├── 📄 pytest.ini
 │               │       │   │       │   │   ├── 📄 reverse_geocode.py
-│               │       │   │       │   │   ├── 📄 __init__.py
-│               │       │   │       │   │   └── 📁 __pycache__/
-│               │       │   │       │   │       ├── 📄 KD_Tree.cpython-312.pyc
-│               │       │   │       │   │       ├── 📄 reverse_geocode.cpython-312.pyc
-│               │       │   │       │   │       └── 📄 __init__.cpython-312.pyc
+│               │       │   │       │   │   └── 📄 __init__.py
 │               │       │   │       │   ├── 📄 pyproject.toml
 │               │       │   │       │   ├── 📁 tests/
 │               │       │   │       │   │   ├── 📄 conftest.py
 │               │       │   │       │   │   ├── 📄 smoke_test.py
-│               │       │   │       │   │   ├── 📄 test_geodude.py
+│               │       │   │       │   │   ├── 📄 test_gazetter.py
 │               │       │   │       │   │   └── 📄 __init__.py
 │               │       │   │       │   └── 📄 uv.lock
-│               │       │   │       └── 📄 MagneticDeclinationCalculator.pyw
+│               │       │   │       ├── 📄 MagneticDeclinationCalculator.pyw
+│               │       │   │       └── 📄 wifi_location.db
 │               │       │   └── 📁 Troubleshooting/
 │               │       │       ├── 📄 .gitkeep
 │               │       │       ├── 📁 Arduino_Nano_EEPROM/

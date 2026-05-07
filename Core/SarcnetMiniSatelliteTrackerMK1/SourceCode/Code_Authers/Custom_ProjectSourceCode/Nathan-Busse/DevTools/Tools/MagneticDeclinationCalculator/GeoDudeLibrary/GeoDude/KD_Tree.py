@@ -1,4 +1,7 @@
-# KD_Tree.py
+"""A Parallelised Implementation of K-D Trees
+
+Code extended from http://folk.uio.no/sturlamo/python/multiprocessing-tutorial.pdf
+"""
 
 import ctypes
 import logging

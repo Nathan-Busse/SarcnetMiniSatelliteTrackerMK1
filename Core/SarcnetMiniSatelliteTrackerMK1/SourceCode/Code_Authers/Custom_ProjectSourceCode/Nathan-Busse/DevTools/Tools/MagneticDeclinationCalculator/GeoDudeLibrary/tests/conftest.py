@@ -1,6 +1,6 @@
 import pytest
 
-from GeoDude.reverse_geocode import LocationBaseModel
+from geodude.reverse_geocode import LocationBaseModel
 
 test_location = {
     (77.5946, 12.9716): LocationBaseModel(

@@ -1,9 +1,3 @@
-"""A Fast, Offline Reverse Geocoder in Python
-
-A Python library for offline reverse geocoding. It improves on an existing library
-called reverse_geocode developed by Ajay Thampi.
-"""
-
 import csv
 import sqlite3
 import sys

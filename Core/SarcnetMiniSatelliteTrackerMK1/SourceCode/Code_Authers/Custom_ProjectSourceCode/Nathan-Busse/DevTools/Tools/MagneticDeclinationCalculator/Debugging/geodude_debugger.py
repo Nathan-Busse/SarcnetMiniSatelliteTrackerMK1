@@ -1,9 +1,6 @@
-"""
-Full‑library debugger for GeoDude.
-Usage:
-    $ python -m geodude.debug               # run all diagnostics
-    >>> from geodude.debug import quick_diagnose; quick_diagnose()
-"""
+'''
+python -m GeoDudeLibrary.geodude.debug
+'''
 
 import csv
 import sqlite3
@@ -15,10 +12,15 @@ import numpy as np
 from shapely import wkb
 from shapely.geometry import Point
 
-# Adjust the import below to match your actual package layout.
-# Assumes the 'geodude' class is in `geodude.reverse_geocode`.
-from GeoDudeLibrary.geodude.reverse_geocode import geodude, DEFAULT_K, DB_PATH, RG_COLUMNS, LocationBaseModel, GeocoderResultBaseModel
+from GeoDudeLibrary import geodude
+from GeoDudeLibrary.geodude.reverse_geocode import (
+    GeocoderResultBaseModel,    
+    LocationBaseModel,
+    DB_PATH,
+    RG_COLUMNS,
+    DEFAULT_K,
 
+    )
 
 class GeoDudeDebugger:
     """

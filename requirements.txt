@@ -3,6 +3,7 @@ geocoder
 geomag
 geopandas
 pynmea2
-pyserial 
+pyserial
+pytest
 requests
 wifi

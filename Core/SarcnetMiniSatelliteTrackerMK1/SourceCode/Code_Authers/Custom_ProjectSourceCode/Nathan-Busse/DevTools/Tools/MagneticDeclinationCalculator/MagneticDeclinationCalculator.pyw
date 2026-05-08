@@ -67,7 +67,7 @@ except ImportError:
 # GeoDude import (optional – falls back to online if missing)
 # ----------------------------------------------------------------------
 try:
-    from GeoDudeLibrary import geodude
+    import geodude
     GEODUDE_AVAILABLE = True
 except ImportError:
     GEODUDE_AVAILABLE = False
@@ -369,7 +369,7 @@ class GeoDudeManager:
         if not self.db_path.exists():
             return None
         try:
-            self.geodude = GeoDude()
+            self.geodude = geodude()
             return self.geodude
         except Exception as e:
             print(f"Failed to load GeoDude: {e}")
@@ -1368,7 +1368,7 @@ class App(ctk.CTk):
 if __name__ == "__main__":
     try:
         import customtkinter, geocoder, geomag, requests
-        from GeoDudeLibrary import GeoDude
+        from GeoDudeLibrary import geodude
     except ImportError as e:
         print(f"Missing dependency: {e}", file=sys.stderr)
         print("pip install customtkinter geocoder geomag requests GeoDude", file=sys.stderr)

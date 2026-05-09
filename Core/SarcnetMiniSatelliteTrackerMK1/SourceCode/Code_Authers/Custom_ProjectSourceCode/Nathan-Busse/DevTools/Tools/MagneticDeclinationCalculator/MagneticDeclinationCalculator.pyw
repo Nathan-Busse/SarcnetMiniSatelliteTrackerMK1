@@ -6,6 +6,10 @@ No online geocoding – Nominatim removed.
 No forced admin – Wi‑Fi scanning works without elevation on Windows.
 """
 
+
+from geodude import fetch_db          # corrected: returns the singleton
+from geodude.geomag_calc import declination
+
 import os
 import sys
 import locale
@@ -31,7 +35,6 @@ except:
 # Regular imports
 # ----------------------------------------------------------------------
 import customtkinter as ctk
-import geomag
 import requests  # only kept for IP geolocation
 
 # ----------------------------------------------------------------------
@@ -46,16 +49,16 @@ except ImportError:
     GPS_AVAILABLE = False
 
 # ----------------------------------------------------------------------
-# GeoDude setup – imports that never trigger circular dependencies
+# GeoDude installed check – imports that never trigger circular dependencies
 # ----------------------------------------------------------------------
 BASE_DIR = Path(__file__).resolve().parent
 # Adjust to the folder that CONTAINS the 'geodude' package
 GEODUDE_LIB_DIR = (BASE_DIR / ".." / ".." / ".." / "CustomLibraries" / "GeoDudeLibrary").resolve()
 sys.path.insert(0, str(GEODUDE_LIB_DIR))
 
-from geodude import fetch_db
 
-# Ensure the database exists and return a Geodude instance
+
+
 try:
     g_instance = fetch_db()                 # builds data if needed, returns the singleton
     GEODUDE_AVAILABLE = True
@@ -71,19 +74,50 @@ class GeodudeAdapter:
         self.g = g
 
     def get_nearest(self, lat, lon):
-        results = list(self.g.search([(lon, lat)]))
-        if results and results[0].result:
-            r = results[0].result
-            return {
-                'name': r.name,
-                'admin1': r.admin1,
-                'admin2': r.admin2,
-                'country': '',
-                'lat': lat,
-                'lon': lon,
-                'address': f"{r.name}, {r.admin2}, {r.admin1}"
-            }
+        """Return nearest ADM3 info. Falls back to centroid if polygon not found."""
+        try:
+            # 1. Try the normal polygon‑based search
+            results = list(self.g.search([(lon, lat)]))
+            if results and results[0].result:
+                r = results[0].result
+                return self._make_result(r.name, r.admin1, r.admin2, lat, lon)
+        except Exception:
+            pass
+
+        # 2. Centroid fallback – always works if data was loaded
+        try:
+            tree = getattr(self.g, 'tree', None)
+            locations = getattr(self.g, 'locations', None)
+            if tree is not None and locations is not None:
+                _, idx = tree.query([(lon, lat)], k=1)
+                idx_val = idx[0] if hasattr(idx, '__iter__') else idx
+                loc = locations[idx_val]
+                name = loc.get('name', '')
+                admin1 = loc.get('admin1', '')
+                admin2 = loc.get('admin2', '')
+                return self._make_result(name, admin1, admin2, lat, lon)
+        except Exception:
+            pass
+
         return None
+
+    @staticmethod
+    def _make_result(name, admin1, admin2, lat, lon):
+        parts = [name]
+        if admin2:
+            parts.append(admin2)
+        if admin1:
+            parts.append(admin1)
+        address = ', '.join(parts) if parts else name
+        return {
+            'name': name,
+            'admin1': admin1 or '',
+            'admin2': admin2 or '',
+            'country': '',
+            'lat': lat,
+            'lon': lon,
+            'address': address
+        }
 
 geodude_adapter = GeodudeAdapter(g_instance) if g_instance else None
 USE_GEODUDE = GEODUDE_AVAILABLE
@@ -888,7 +922,8 @@ class App(ctk.CTk):
             return
         self._set_status("Calculating declination...", "info")
         try:
-            d = geomag.declination(self.latitude, self.longitude, 0)
+
+            d = declination(self.latitude, self.longitude, 0)
             text = f"Declination: {d:.2f}°"
             self.lbl_result.configure(state="normal")
             self.lbl_result.delete(0, "end")
@@ -912,7 +947,7 @@ class App(ctk.CTk):
 # ----------------------------------------------------------------------
 if __name__ == "__main__":
     try:
-        import customtkinter, geomag, requests
+        import customtkinter, requests
     except ImportError as e:
         print(f"Missing dependency: {e}", file=sys.stderr)
         print("pip install customtkinter geomag requests", file=sys.stderr)

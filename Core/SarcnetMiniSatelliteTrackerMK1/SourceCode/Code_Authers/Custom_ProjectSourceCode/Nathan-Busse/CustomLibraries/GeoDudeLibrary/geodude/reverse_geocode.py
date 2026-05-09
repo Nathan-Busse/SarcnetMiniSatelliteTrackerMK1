@@ -75,7 +75,7 @@ class geodude:
             self.tree = KD_Tree.cKDTree_MP(coordinates)
 
     def _load(self):
-        with open(FILENAME, newline="") as file:
+        with open(FILENAME, newline="", encoding="utf-8") as file:
             stream_reader = csv.DictReader(file)
             header = stream_reader.fieldnames
             if header != RG_COLUMNS:

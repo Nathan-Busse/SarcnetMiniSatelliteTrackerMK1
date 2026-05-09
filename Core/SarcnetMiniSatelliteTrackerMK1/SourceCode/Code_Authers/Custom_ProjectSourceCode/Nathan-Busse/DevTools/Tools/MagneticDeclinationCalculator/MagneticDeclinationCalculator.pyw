@@ -1,14 +1,13 @@
 #!/usr/bin/env python3
 """
 Magnetic Declination Calculator
-Uses GeoDude (ADM3 polygon boundaries) for offline reverse geocoding.
-No online geocoding – Nominatim removed.
+Uses GeoDude (ADM3 polygon boundaries) for offline reverse geocoding,
+GeoDude’s built‑in WMM2025 geomagnetic calculator, and
+BeaconDB for free online Wi‑Fi geolocation (no API key required).
+Includes a “Submit to BeaconDB” button to contribute local Wi‑Fi scans.
+No online address lookup – all offline once location is acquired.
 No forced admin – Wi‑Fi scanning works without elevation on Windows.
 """
-
-
-from geodude import fetch_db          # corrected: returns the singleton
-from geodude.geomag_calc import declination
 
 import os
 import sys
@@ -19,6 +18,7 @@ import datetime
 import sqlite3
 import subprocess
 import re
+import json
 import platform
 from pathlib import Path
 
@@ -35,7 +35,7 @@ except:
 # Regular imports
 # ----------------------------------------------------------------------
 import customtkinter as ctk
-import requests  # only kept for IP geolocation
+import requests
 
 # ----------------------------------------------------------------------
 # Optional libraries – the app remains functional without them
@@ -49,18 +49,17 @@ except ImportError:
     GPS_AVAILABLE = False
 
 # ----------------------------------------------------------------------
-# GeoDude installed check – imports that never trigger circular dependencies
+# GeoDude setup
 # ----------------------------------------------------------------------
 BASE_DIR = Path(__file__).resolve().parent
-# Adjust to the folder that CONTAINS the 'geodude' package
 GEODUDE_LIB_DIR = (BASE_DIR / ".." / ".." / ".." / "CustomLibraries" / "GeoDudeLibrary").resolve()
 sys.path.insert(0, str(GEODUDE_LIB_DIR))
 
-
-
+from geodude import fetch_db
+from geodude.geomag_calc import declination
 
 try:
-    g_instance = fetch_db()                 # builds data if needed, returns the singleton
+    g_instance = fetch_db()
     GEODUDE_AVAILABLE = True
     print("GeoDude loaded and ready.")
 except Exception as e:
@@ -68,67 +67,12 @@ except Exception as e:
     GEODUDE_AVAILABLE = False
     g_instance = None
 
-# Adapter that provides the simple get_nearest(lat, lon) interface
-class GeodudeAdapter:
-    def __init__(self, g):
-        self.g = g
-
-    def get_nearest(self, lat, lon):
-        """Return nearest ADM3 info. Falls back to centroid if polygon not found."""
-        try:
-            # 1. Try the normal polygon‑based search
-            results = list(self.g.search([(lon, lat)]))
-            if results and results[0].result:
-                r = results[0].result
-                return self._make_result(r.name, r.admin1, r.admin2, lat, lon)
-        except Exception:
-            pass
-
-        # 2. Centroid fallback – always works if data was loaded
-        try:
-            tree = getattr(self.g, 'tree', None)
-            locations = getattr(self.g, 'locations', None)
-            if tree is not None and locations is not None:
-                _, idx = tree.query([(lon, lat)], k=1)
-                idx_val = idx[0] if hasattr(idx, '__iter__') else idx
-                loc = locations[idx_val]
-                name = loc.get('name', '')
-                admin1 = loc.get('admin1', '')
-                admin2 = loc.get('admin2', '')
-                return self._make_result(name, admin1, admin2, lat, lon)
-        except Exception:
-            pass
-
-        return None
-
-    @staticmethod
-    def _make_result(name, admin1, admin2, lat, lon):
-        parts = [name]
-        if admin2:
-            parts.append(admin2)
-        if admin1:
-            parts.append(admin1)
-        address = ', '.join(parts) if parts else name
-        return {
-            'name': name,
-            'admin1': admin1 or '',
-            'admin2': admin2 or '',
-            'country': '',
-            'lat': lat,
-            'lon': lon,
-            'address': address
-        }
-
-geodude_adapter = GeodudeAdapter(g_instance) if g_instance else None
-USE_GEODUDE = GEODUDE_AVAILABLE
-
 # ----------------------------------------------------------------------
 # Constants
 # ----------------------------------------------------------------------
 APP_TITLE = "Magnetic Declination Calculator"
 DEFAULT_APPEARANCE = "Dark"
 DEFAULT_THEME = "dark-blue"
-# NOMINAT_USER_AGENT removed – no longer needed
 
 WIFI_DB_PATH = BASE_DIR / "wifi_location.db"
 
@@ -408,6 +352,40 @@ class GPSReader:
 
 
 # ----------------------------------------------------------------------
+# BeaconDB geolocation (free, no API key)
+# ----------------------------------------------------------------------
+def _locate_via_beacondb(bssids):
+    """
+    Query BeaconDB's free geolocation API.
+    Returns (lat, lon, accuracy_m, reason) on success,
+    or (None, None, None, reason) on failure.
+    """
+    url = "https://api.beacondb.net/v1/geolocate"
+    wifi_list = [{"macAddress": b, "signalStrength": -60} for b in bssids[:10]]
+    payload = {"wifiAccessPoints": wifi_list, "considerIp": False}
+    headers = {"User-Agent": "MagneticDeclinationCalculator/1.0"}
+    try:
+        resp = requests.post(url, json=payload, headers=headers, timeout=5)
+        if resp.status_code == 200:
+            data = resp.json()
+            loc = data.get("location", {})
+            if "lat" in loc and "lng" in loc:
+                return loc["lat"], loc["lng"], data.get("accuracy", 150.0), "success"
+            else:
+                return None, None, None, "200 OK but missing location in response"
+        elif resp.status_code == 404:
+            return None, None, None, "404 – BeaconDB has no data for these Wi‑Fi networks"
+        else:
+            return None, None, None, f"Error {resp.status_code}"
+    except requests.exceptions.Timeout:
+        return None, None, None, "Timeout – BeaconDB server did not respond"
+    except requests.exceptions.ConnectionError:
+        return None, None, None, "Connection error – cannot reach BeaconDB"
+    except Exception as e:
+        return None, None, None, f"Unexpected error: {str(e)}"
+
+
+# ----------------------------------------------------------------------
 # Main Application
 # ----------------------------------------------------------------------
 class App(ctk.CTk):
@@ -428,8 +406,8 @@ class App(ctk.CTk):
         self.longitude = None
         self.processing = False
 
-        self.geodude = geodude_adapter          # the adapter created above
-        self.use_geodude = USE_GEODUDE
+        self.geodude = g_instance
+        self.use_geodude = GEODUDE_AVAILABLE
 
         self.gps_reader = GPSReader(self)
         self.gps_active = False
@@ -495,14 +473,13 @@ class App(ctk.CTk):
         self.console = ConsolePanel(main_frame)
         self.console.pack(fill="both", expand=True, pady=(0, 10))
 
-        # Location input card – removed address entry entirely, only manual and GPS now
+        # Location input card
         loc_card = ctk.CTkFrame(main_frame, fg_color=COLORS["card_bg"],
                                 corner_radius=12, border_width=1, border_color=COLORS["card_border"])
         loc_card.pack(fill="x", pady=(0, 10))
         ctk.CTkLabel(loc_card, text="Location Input", font=("Arial", 14, "bold"),
                      text_color=COLORS["text_primary"]).pack(anchor="w", padx=15, pady=(10, 5))
 
-        # No address bar – only manual coordinates and GPS button
         method_frame = ctk.CTkFrame(loc_card, fg_color="transparent")
         method_frame.pack(fill="x", padx=15, pady=5)
 
@@ -512,7 +489,7 @@ class App(ctk.CTk):
                                         hover_color=COLORS["accent_hover"],
                                         font=("Arial", 13, "bold"))
         self.btn_locate.pack(side="left", padx=(0, 10))
-        ToolTip(self.btn_locate, "One‑press: get location (Wi‑Fi if possible) and calculate declination")
+        ToolTip(self.btn_locate, "One‑press: get location (BeaconDB → local DB → IP) and calculate declination")
 
         self.btn_gps = ctk.CTkButton(method_frame, text="GPS", command=self._toggle_gps,
                                      width=60, fg_color=COLORS["secondary"],
@@ -538,6 +515,29 @@ class App(ctk.CTk):
                                         font=("Arial", 12))
         self.btn_manual.pack(side="left", padx=5)
         ToolTip(self.btn_manual, "Set manual coordinates and validate offline via GeoDude")
+
+        self.btn_calibrate = ctk.CTkButton(method_frame, text="Calibrate Wi‑Fi",
+                                           command=self._on_calibrate_wifi,
+                                           width=120,
+                                           fg_color="transparent",
+                                           border_width=1, border_color=COLORS["gold"],
+                                           text_color=COLORS["gold"],
+                                           hover_color=COLORS["gold"],
+                                           font=("Arial", 12))
+        self.btn_calibrate.pack(side="left", padx=5)
+        ToolTip(self.btn_calibrate, "Use the manual lat/lon as the seed for the Wi‑Fi database (clears old DB)")
+
+        # New: Submit to BeaconDB button
+        self.btn_submit = ctk.CTkButton(method_frame, text="Submit to BeaconDB",
+                                        command=self._on_submit_beacondb,
+                                        width=140,
+                                        fg_color="transparent",
+                                        border_width=1, border_color=COLORS["accent"],
+                                        text_color=COLORS["accent"],
+                                        hover_color=COLORS["accent_hover"],
+                                        font=("Arial", 12))
+        self.btn_submit.pack(side="left", padx=5)
+        ToolTip(self.btn_submit, "Upload current Wi‑Fi scan and GPS coordinates to BeaconDB (contribute data)")
 
         # Coordinates & Precision card
         coord_card = ctk.CTkFrame(main_frame, fg_color=COLORS["card_bg"],
@@ -618,7 +618,7 @@ class App(ctk.CTk):
         self._set_precision(level, detail)
 
     # ------------------------------------------------------------------
-    # Help dialog – updated to reflect no online geocoding
+    # Help dialog
     # ------------------------------------------------------------------
     def _show_help(self):
         dialog = ctk.CTkToplevel(self)
@@ -630,16 +630,22 @@ class App(ctk.CTk):
         ctk.CTkLabel(dialog, text="Help – Magnetic Declination Calculator",
                      font=("Arial", 18, "bold"), text_color=COLORS["text_primary"]).pack(pady=(20, 10))
         text = """
-        This calculator uses exclusively OFFLINE reverse geocoding
-        via GeoDude (ADM3 polygon boundaries).
+        This calculator uses BeaconDB (free online Wi‑Fi geolocation),
+        an offline Wi‑Fi database, or manual coordinates to obtain your
+        location, then calculates magnetic declination using GeoDude's
+        built‑in WMM2025 model.
 
         Locate & Calculate – One‑press button:
-           1. Tries to get location via Wi‑Fi (if database exists)
-           2. Falls back to IP geolocation if Wi‑Fi fails
+           1. Tries BeaconDB (free, no API key, ~150 m accuracy)
+           2. Falls back to offline Wi‑Fi database
+           3. Falls back to IP geolocation
 
-        Alternative methods:
-        Manual coordinates – Exact (user input), validated offline by GeoDude.
-        GPS – Live serial GPS tracking.
+        Calibrate Wi‑Fi – seed the offline database with manual coordinates.
+        Manual – enter coordinates directly, validated by GeoDude.
+        GPS – live serial GPS tracking.
+
+        Submit to BeaconDB – contribute your Wi‑Fi scan and GPS coordinates
+        to the BeaconDB database so others (and you) can benefit later.
 
         No online address lookup is performed.
         Double-click any result field to copy its content.
@@ -653,19 +659,16 @@ class App(ctk.CTk):
                       hover_color=COLORS["accent_hover"]).pack(pady=20)
 
     # ------------------------------------------------------------------
-    # Reverse geocoding – uses only GeoDude
+    # Reverse geocoding – direct call to geodude singleton
     # ------------------------------------------------------------------
     def _reverse_geocode(self, lat, lon):
         self.console.append(f"Reverse geocoding {lat:.6f}, {lon:.6f}...")
         if self.use_geodude and self.geodude:
-            try:
-                place = self.geodude.get_nearest(lat, lon)
-                if place:
-                    addr = place["address"]
-                    self.console.append(f"GeoDude ADM3 returned: {addr}")
-                    return addr
-            except Exception as e:
-                self.console.append(f"GeoDude ADM3 error: {e}")
+            place = self.geodude.get_nearest(lat, lon)
+            if place:
+                addr = place["address"]
+                self.console.append(f"GeoDude ADM3 returned: {addr}")
+                return addr
         self.console.append("No address found (GeoDude unavailable or no result).")
         return None
 
@@ -682,7 +685,7 @@ class App(ctk.CTk):
         return address, "City/District level"
 
     # ------------------------------------------------------------------
-    # Manual location setting (still validates via GeoDude)
+    # Manual location setting
     # ------------------------------------------------------------------
     def _on_set_manual(self):
         try:
@@ -707,7 +710,7 @@ class App(ctk.CTk):
             self._set_status("Coordinates set. No address found.", "info")
 
     # ------------------------------------------------------------------
-    # IP location (still used as fallback for coordinates)
+    # IP location (fallback)
     # ------------------------------------------------------------------
     def _get_ip_location(self):
         if self.ip_location is not None:
@@ -786,6 +789,87 @@ class App(ctk.CTk):
         self._set_status(f"GPS live: {lat:.6f}, {lon:.6f} (q{quality})", "success")
 
     # ------------------------------------------------------------------
+    # Submit to BeaconDB
+    # ------------------------------------------------------------------
+    def _on_submit_beacondb(self):
+        """Upload current Wi‑Fi scan + coordinates to BeaconDB."""
+        if self.latitude is None or self.longitude is None:
+            self._set_status("First set coordinates (Manual or GPS) before submitting.", "error")
+            return
+        scanner = WiFiScanner(self)
+        bssids = scanner.scan()
+        if not bssids:
+            self._set_status("No Wi‑Fi networks visible to submit.", "error")
+            return
+        self._set_status("Submitting to BeaconDB...", "info")
+        threading.Thread(target=self._submit_to_beacondb_worker, args=(bssids,), daemon=True).start()
+
+    def _submit_to_beacondb_worker(self, bssids):
+        url = "https://api.beacondb.net/v2/geosubmit"
+        payload = {
+            "items": [{
+                "timestamp": int(time.time() * 1000),
+                "position": {
+                    "latitude": self.latitude,
+                    "longitude": self.longitude,
+                    "accuracy": 5.0
+                },
+                "wifiAccessPoints": [
+                    {"macAddress": b, "signalStrength": -60} for b in bssids
+                ]
+            }]
+        }
+        headers = {"User-Agent": "MagneticDeclinationCalculator/1.0",
+                   "Content-Type": "application/json"}
+        try:
+            resp = requests.post(url, json=payload, headers=headers, timeout=10)
+            if resp.status_code == 200:
+                self.after(0, lambda: self.console.append("BeaconDB submission accepted. Thank you!"))
+                self.after(0, lambda: self._set_status("Submission successful.", "success"))
+            else:
+                self.after(0, lambda: self.console.append(f"BeaconDB submission failed (HTTP {resp.status_code})"))
+                self.after(0, lambda: self._set_status(f"Submission failed (HTTP {resp.status_code})", "error"))
+        except Exception as e:
+            self.after(0, lambda: self.console.append(f"BeaconDB submission error: {e}"))
+            self.after(0, lambda: self._set_status("Submission error. See console.", "error"))
+
+    # ------------------------------------------------------------------
+    # Calibrate Wi‑Fi button
+    # ------------------------------------------------------------------
+    def _on_calibrate_wifi(self):
+        try:
+            lat = float(self.entry_lat.get().strip())
+            lon = float(self.entry_lon.get().strip())
+            if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+                raise ValueError
+        except:
+            self._set_status("Enter valid manual lat/lon first.", "error")
+            return
+
+        if WIFI_DB_PATH.exists():
+            try:
+                WIFI_DB_PATH.unlink()
+                self.console.append("Old wifi_location.db deleted.")
+            except Exception as e:
+                self.console.append(f"Warning: could not delete wifi db: {e}")
+
+        self._set_coordinates(lat, lon, "Calibrating Wi‑Fi", "Manual seed – rebuilding…")
+        self._set_status("Rebuilding Wi‑Fi database with your manual coordinates…", "info")
+
+        def rebuild():
+            scanner = WiFiScanner(self)
+            bssids = scanner.scan()
+            if bssids:
+                self._build_update_wifi_db(bssids, lat, lon)
+                self.console.append("Wi‑Fi database rebuilt successfully.")
+                self.after(0, lambda: self._set_status("Wi‑Fi database calibrated. You may now use Locate & Calculate.", "success"))
+            else:
+                self.after(0, lambda: self.console.append("No BSSIDs found; could not calibrate."))
+                self.after(0, lambda: self._set_status("Calibration failed – no networks found.", "error"))
+
+        threading.Thread(target=rebuild, daemon=True).start()
+
+    # ------------------------------------------------------------------
     # Core workflow
     # ------------------------------------------------------------------
     def _on_locate_and_calculate(self):
@@ -807,72 +891,54 @@ class App(ctk.CTk):
             else:
                 self.console.append(f"[WIFI_ADAPTER] Status: {wifi_status}")
 
-            db_exists = WIFI_DB_PATH.exists()
-            if db_exists:
-                try:
-                    conn = sqlite3.connect(str(WIFI_DB_PATH))
-                    count = conn.execute('SELECT COUNT(*) FROM access_points').fetchone()[0]
-                    conn.close()
-                    self.console.append(f"[DATABASE] Found with {count} entries.")
-                except Exception as e:
-                    self.console.append(f"[DATABASE] Corrupted ({e}). Will rebuild.")
-                    db_exists = False
-            else:
-                self.console.append("[DATABASE] Does not exist.")
+            scanner = WiFiScanner(self)
+            bssids = scanner.scan()
+            if bssids:
+                self.console.append(f"Scanned {len(bssids)} BSSIDs.")
 
-            if db_exists and wifi_ok:
-                lat, lon = self._try_wifi_location()
-                if lat is not None:
-                    self._after_location(lat, lon, "Wi‑Fi Location (100‑500 m)")
+                # 1a. Try BeaconDB first (free, accurate)
+                lat_b, lon_b, acc_b, reason = _locate_via_beacondb(bssids)
+                if lat_b is not None:
+                    self.console.append(f"BeaconDB returned: {lat_b:.6f}, {lon_b:.6f} (accuracy {acc_b:.0f} m)")
+                    self.after(0, lambda: self._set_coordinates(lat_b, lon_b,
+                                                            f"BeaconDB ({acc_b:.0f} m)",
+                                                            "Wi‑Fi geolocation – BeaconDB"))
+                    self.after(0, lambda: self._set_status(
+                        f"Location via BeaconDB: {lat_b:.6f}, {lon_b:.6f} (±{acc_b:.0f} m)", "success"))
+                    self.after(0, self._on_calculate)
+                    self.after(0, self._finish_processing)
                     return
-
-            if wifi_ok:
-                ip_loc = self._get_ip_location()
-                if ip_loc:
-                    ip_lat, ip_lon, ip_desc = ip_loc
-                    self.console.append(f"[IP] Location: {ip_desc} ({ip_lat:.4f}, {ip_lon:.4f})")
-                    scanner = WiFiScanner(self)
-                    bssids = scanner.scan()
-                    self.console.append(f"Scanned {len(bssids)} BSSIDs.")
-                    if bssids:
-                        self._build_update_wifi_db(bssids, ip_lat, ip_lon)
-                        lat, lon = self._try_wifi_location()
-                        if lat is not None:
-                            self._after_location(lat, lon, "Wi‑Fi Location (100‑500 m, after build)")
-                            return
-                    else:
-                        self.console.append("No BSSIDs found – cannot build database.")
                 else:
-                    self.console.append("[IP] Failed to get IP location; cannot build database.")
+                    self.console.append(f"BeaconDB lookup failed: {reason}")
 
+                # 1b. Try local Wi‑Fi database
+                if WIFI_DB_PATH.exists():
+                    location = scanner.get_location(WIFI_DB_PATH)
+                    if location:
+                        lat, lon = location
+                        self.after(0, lambda: self._set_coordinates(lat, lon, "Wi‑Fi Location (100‑500 m)", "Offline database"))
+                        self.after(0, lambda: self._set_status(f"Location via offline Wi‑Fi DB: {lat:.6f}, {lon:.6f}", "success"))
+                        self.console.append(f"Offline Wi‑Fi DB returned: {lat:.6f}, {lon:.6f}")
+                        self.after(0, self._on_calculate)
+                        self.after(0, self._finish_processing)
+                        return
+
+            # 2. Fallback to IP geolocation
             ip_loc = self._get_ip_location()
             if ip_loc:
                 lat, lon, desc = ip_loc
-                self._after_location(lat, lon, "IP (5‑50 km)")
+                self.after(0, lambda: self._set_coordinates(lat, lon, "IP (5‑50 km)", desc))
+                self.after(0, lambda: self._set_status(f"Using IP location: {lat:.6f}, {lon:.6f}", "warning"))
+                self.console.append(f"IP geolocation returned: {lat:.6f}, {lon:.6f}")
+                self.after(0, self._on_calculate)
             else:
                 self.console.append("All location methods failed.")
-                self._set_status("Unable to determine location. Try manual input.", "error")
-                self._finish_processing()
+                self.after(0, lambda: self._set_status("Unable to determine location. Try manual input.", "error"))
+            self.after(0, self._finish_processing)
         except Exception as e:
             self.console.append(f"Fatal error in workflow: {e}")
-            self._set_status("An error occurred. See console.", "error")
-            self._finish_processing()
-
-    def _try_wifi_location(self):
-        self.console.append("[WIFI] Scanning for networks...")
-        scanner = WiFiScanner(self)
-        bssids = scanner.scan()
-        if not bssids:
-            self.console.append("No access points found.")
-            return None, None
-        self.console.append(f"Found {len(bssids)} BSSIDs. Matching against database...")
-        location = scanner.get_location(WIFI_DB_PATH)
-        if location:
-            self.console.append(f"Wi‑Fi location found: {location[0]:.6f}, {location[1]:.6f}")
-            return location
-        else:
-            self.console.append("No matching BSSIDs in database.")
-            return None, None
+            self.after(0, lambda: self._set_status("An error occurred. See console.", "error"))
+            self.after(0, self._finish_processing)
 
     def _build_update_wifi_db(self, bssids, lat, lon):
         self.console.append("[BUILD] Building/updating Wi‑Fi database...")
@@ -895,34 +961,16 @@ class App(ctk.CTk):
         except Exception as e:
             self.console.append(f"Database update error: {e}")
 
-    def _after_location(self, lat, lon, level):
-        addr = self._reverse_geocode(lat, lon)
-        detail, addr_level = self._extract_address_detail(addr) if addr else ("", "unknown")
-        precision_detail = detail if addr else ""
-        if not precision_detail:
-            precision_detail = addr_level if addr else ""
-        self.after(0, lambda: self._set_coordinates(lat, lon, level, precision_detail))
-        status_msg = f"{level}: {lat:.6f}, {lon:.6f}"
-        if addr:
-            status_msg += f" – {detail}"
-        self.after(0, lambda: self._set_status(status_msg, "success"))
-        self.after(100, self._on_calculate)
-        self.after(200, self._finish_processing)
-
     def _finish_processing(self):
-        self.after(0, lambda: self.btn_locate.configure(state="normal", text="Locate & Calculate Declination"))
+        self.btn_locate.configure(state="normal", text="Locate & Calculate Declination")
         self.processing = False
 
-    # ------------------------------------------------------------------
-    # Declination calculation
-    # ------------------------------------------------------------------
     def _on_calculate(self):
         if self.latitude is None or self.longitude is None:
             self._set_status("Please set a location first.", "error")
             return
         self._set_status("Calculating declination...", "info")
         try:
-
             d = declination(self.latitude, self.longitude, 0)
             text = f"Declination: {d:.2f}°"
             self.lbl_result.configure(state="normal")
@@ -950,7 +998,7 @@ if __name__ == "__main__":
         import customtkinter, requests
     except ImportError as e:
         print(f"Missing dependency: {e}", file=sys.stderr)
-        print("pip install customtkinter geomag requests", file=sys.stderr)
+        print("pip install customtkinter requests", file=sys.stderr)
         sys.exit(1)
     app = App()
     app.mainloop()

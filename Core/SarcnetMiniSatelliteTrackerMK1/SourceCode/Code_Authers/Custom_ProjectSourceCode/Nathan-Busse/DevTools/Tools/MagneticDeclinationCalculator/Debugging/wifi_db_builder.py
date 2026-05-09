@@ -94,7 +94,7 @@ pause
 # IP location fetch
 # ----------------------------------------------------------------------
 def get_ip_location():
-    print("🌐 Fetching approximate location via IP (ip-api.com)...")
+    print(" Fetching approximate location via IP (ip-api.com)...")
     try:
         resp = requests.get('http://ip-api.com/json/', timeout=10)
         if resp.status_code == 200:
@@ -104,14 +104,14 @@ def get_ip_location():
                 lon = data['lon']
                 city = data.get('city', 'Unknown')
                 country = data.get('country', 'Unknown')
-                print(f"📌 Location found: {city}, {country} ({lat:.4f}, {lon:.4f})")
+                print(f" Location found: {city}, {country} ({lat:.4f}, {lon:.4f})")
                 return lat, lon
             else:
-                print("❌ IP geolocation failed: API returned unsuccessful status")
+                print(" IP geolocation failed: API returned unsuccessful status")
         else:
-            print(f"❌ IP geolocation failed (HTTP {resp.status_code})")
+            print(f" IP geolocation failed (HTTP {resp.status_code})")
     except Exception as e:
-        print(f"❌ Error fetching IP location: {e}")
+        print(f" Error fetching IP location: {e}")
     return None, None
 
 # ----------------------------------------------------------------------
@@ -160,22 +160,22 @@ class WiFiScanner:
 # Build the database (using IP location)
 # ----------------------------------------------------------------------
 def build_database():
-    print("\n📡 Creating Wi‑Fi location database (fully offline)...")
+    print("\n Creating Wi‑Fi location database (fully offline)...")
 
     # 1. Get location via IP
     lat, lon = get_ip_location()
     if lat is None or lon is None:
-        print("❌ Failed to get IP location. Exiting.")
+        print(" Failed to get IP location. Exiting.")
         return
 
     # 2. Scan Wi‑Fi networks
     scanner = WiFiScanner()
-    print("\n📶 Scanning for visible Wi‑Fi networks...")
+    print("\n Scanning for visible Wi‑Fi networks...")
     bssids = scanner.scan()
-    print(f"✅ Found {len(bssids)} access points")
+    print(f" Found {len(bssids)} access points")
 
     if not bssids:
-        print("⚠️ No Wi‑Fi networks found.")
+        print(" No Wi‑Fi networks found.")
         print("Possible reasons:")
         print("  - Not running as Administrator (Windows)")
         print("  - Wi‑Fi adapter is disabled or not supported")
@@ -184,14 +184,14 @@ def build_database():
 
     # 3. Show sample BSSIDs
     if bssids:
-        print("\n📶 First 5 BSSIDs found:")
+        print("\n First 5 BSSIDs found:")
         for i, bssid in enumerate(bssids[:5]):
             print(f"  {i+1}: {bssid}")
         if len(bssids) > 5:
             print(f"  ... and {len(bssids) - 5} more")
 
     # 4. Create/overwrite the database
-    print("\n💾 Saving database...")
+    print("\n Saving database...")
     if WIFI_DB_PATH.exists():
         WIFI_DB_PATH.unlink()
 
@@ -220,19 +220,19 @@ def build_database():
     count = cursor.fetchone()[0]
     conn.close()
 
-    print(f"\n✅ Database created at: {WIFI_DB_PATH}")
-    print(f"✅ Total access points saved: {count}")
+    print(f"\n Database created at: {WIFI_DB_PATH}")
+    print(f" Total access points saved: {count}")
 
     if WIFI_DB_PATH.exists():
         size = WIFI_DB_PATH.stat().st_size
-        print(f"📁 File size: {size} bytes ({size/1024:.2f} KB)")
+        print(f" File size: {size} bytes ({size/1024:.2f} KB)")
 
 if __name__ == "__main__":
     WIFI_DB_PATH = Path(__file__).parent / "wifi_location.db"
 
     if not is_admin():
-        print("❌ Not running with admin/root privileges.")
+        print(" Not running with admin/root privileges.")
         request_admin()
     else:
-        print("✅ Running with admin/root privileges.")
+        print(" Running with admin/root privileges.")
         build_database()

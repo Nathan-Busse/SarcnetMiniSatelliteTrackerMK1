@@ -12,9 +12,10 @@ import numpy as np
 from shapely import wkb
 from shapely.geometry import Point
 
-from GeoDudeLibrary import geodude
-from GeoDudeLibrary.geodude.reverse_geocode import (
-    GeocoderResultBaseModel,    
+import geodude
+from geodude import (
+    GeocoderResultBaseModel,
+    reverse_geocode,    
     LocationBaseModel,
     DB_PATH,
     RG_COLUMNS,

@@ -2,6 +2,7 @@
 """
 Magnetic Declination Calculator
 Uses GeoDude (ADM3 polygon boundaries) for offline reverse geocoding.
+No online geocoding – Nominatim removed.
 No forced admin – Wi‑Fi scanning works without elevation on Windows.
 """
 
@@ -14,8 +15,6 @@ import datetime
 import sqlite3
 import subprocess
 import re
-import tempfile
-import json
 import platform
 from pathlib import Path
 
@@ -33,7 +32,7 @@ except:
 # ----------------------------------------------------------------------
 import customtkinter as ctk
 import geomag
-import requests
+import requests  # only kept for IP geolocation
 
 # ----------------------------------------------------------------------
 # Optional libraries – the app remains functional without them
@@ -50,26 +49,22 @@ except ImportError:
 # GeoDude setup – imports that never trigger circular dependencies
 # ----------------------------------------------------------------------
 BASE_DIR = Path(__file__).resolve().parent
-# Adjust this to the folder that CONTAINS your 'geodude' package
+# Adjust to the folder that CONTAINS the 'geodude' package
 GEODUDE_LIB_DIR = (BASE_DIR / ".." / ".." / ".." / "CustomLibraries" / "GeoDudeLibrary").resolve()
 sys.path.insert(0, str(GEODUDE_LIB_DIR))
 
-# Import directly from submodules – avoids any circular import
-from geodude.reverse_geocode import geodude as GeodudeClass
-from geodude import create_db
 from geodude import fetch_db
 
-# One‑time data installation – only runs if the package data files are missing
-from importlib.resources import files
-DATA_DIR = files("geodude.data")          # resolves to geodude/data/
-if not (DATA_DIR / "data.db").exists() or not (DATA_DIR / "geo-boundaries.csv").exists():
-    print("GeoDude data files missing. Running installer…")
-    fetch_db()                          # downloads the latest data
-    create_db()                         # builds the database
-    print("Installer finished.")
+# Ensure the database exists and return a Geodude instance
+try:
+    g_instance = fetch_db()                 # builds data if needed, returns the singleton
+    GEODUDE_AVAILABLE = True
+    print("GeoDude loaded and ready.")
+except Exception as e:
+    print(f"GeoDude could not be loaded: {e}")
+    GEODUDE_AVAILABLE = False
+    g_instance = None
 
-# Create the singleton instance – it loads data.db & geo-boundaries.csv automatically
-_g_instance = fetch_db()
 # Adapter that provides the simple get_nearest(lat, lon) interface
 class GeodudeAdapter:
     def __init__(self, g):
@@ -90,9 +85,8 @@ class GeodudeAdapter:
             }
         return None
 
-geodude_adapter = GeodudeAdapter(_g_instance)
-USE_GEODUDE = True
-print("GeoDude loaded and ready.")
+geodude_adapter = GeodudeAdapter(g_instance) if g_instance else None
+USE_GEODUDE = GEODUDE_AVAILABLE
 
 # ----------------------------------------------------------------------
 # Constants
@@ -100,7 +94,7 @@ print("GeoDude loaded and ready.")
 APP_TITLE = "Magnetic Declination Calculator"
 DEFAULT_APPEARANCE = "Dark"
 DEFAULT_THEME = "dark-blue"
-NOMINAT_USER_AGENT = "MagneticDeclinationCalculator/1.0"
+# NOMINAT_USER_AGENT removed – no longer needed
 
 WIFI_DB_PATH = BASE_DIR / "wifi_location.db"
 
@@ -416,9 +410,9 @@ class App(ctk.CTk):
             self._set_status("Offline reverse geocoding ready (GeoDude ADM3).", "success")
             self.lbl_geodude.configure(text="Offline GeoDude ADM3: Loaded", text_color=COLORS["accent"])
         else:
-            self._set_status("Online reverse geocoding only (GeoDude not loaded).", "warning")
-            self.lbl_geodude.configure(text="Offline GeoDude ADM3: Not loaded (using online)",
-                                       text_color=COLORS["gold"])
+            self._set_status("GeoDude not loaded. Reverse geocoding unavailable.", "error")
+            self.lbl_geodude.configure(text="Offline GeoDude ADM3: Not loaded",
+                                       text_color=COLORS["danger"])
 
     # ------------------------------------------------------------------
     # Window management
@@ -467,29 +461,14 @@ class App(ctk.CTk):
         self.console = ConsolePanel(main_frame)
         self.console.pack(fill="both", expand=True, pady=(0, 10))
 
-        # Location input card
+        # Location input card – removed address entry entirely, only manual and GPS now
         loc_card = ctk.CTkFrame(main_frame, fg_color=COLORS["card_bg"],
                                 corner_radius=12, border_width=1, border_color=COLORS["card_border"])
         loc_card.pack(fill="x", pady=(0, 10))
         ctk.CTkLabel(loc_card, text="Location Input", font=("Arial", 14, "bold"),
                      text_color=COLORS["text_primary"]).pack(anchor="w", padx=15, pady=(10, 5))
 
-        addr_frame = ctk.CTkFrame(loc_card, fg_color="transparent")
-        addr_frame.pack(fill="x", padx=15, pady=5)
-        self.entry_address = ctk.CTkEntry(addr_frame, placeholder_text="Street address, city, country",
-                                          width=350, font=("Arial", 12))
-        self.entry_address.pack(side="left", padx=(0, 10))
-        ToolTip(self.entry_address, "Type a full address and click 'Get from Address'")
-        self.btn_address = ctk.CTkButton(addr_frame, text="Get from Address",
-                                         command=self._on_get_from_address,
-                                         width=120, fg_color=COLORS["accent"],
-                                         hover_color=COLORS["accent_hover"], font=("Arial", 12))
-        self.btn_address.pack(side="left")
-        ToolTip(self.btn_address, "Forward geocode the address (online)")
-
-        ctk.CTkFrame(loc_card, height=1, fg_color=COLORS["card_border"]).pack(fill="x", padx=15, pady=5)
-
-        # Main method buttons
+        # No address bar – only manual coordinates and GPS button
         method_frame = ctk.CTkFrame(loc_card, fg_color="transparent")
         method_frame.pack(fill="x", padx=15, pady=5)
 
@@ -501,7 +480,6 @@ class App(ctk.CTk):
         self.btn_locate.pack(side="left", padx=(0, 10))
         ToolTip(self.btn_locate, "One‑press: get location (Wi‑Fi if possible) and calculate declination")
 
-        # GPS button
         self.btn_gps = ctk.CTkButton(method_frame, text="GPS", command=self._toggle_gps,
                                      width=60, fg_color=COLORS["secondary"],
                                      hover_color=COLORS["secondary_hover"],
@@ -509,7 +487,6 @@ class App(ctk.CTk):
         self.btn_gps.pack(side="left", padx=(0, 5))
         ToolTip(self.btn_gps, "Start/stop live GPS tracking")
 
-        # Manual coordinates
         ctk.CTkLabel(method_frame, text="Manual:", font=("Arial", 12),
                      text_color=COLORS["text_secondary"]).pack(side="left", padx=(10, 5))
         self.entry_lat = ctk.CTkEntry(method_frame, placeholder_text="Lat", width=100, font=("Arial", 12))
@@ -526,6 +503,7 @@ class App(ctk.CTk):
                                         hover_color=COLORS["secondary_hover"],
                                         font=("Arial", 12))
         self.btn_manual.pack(side="left", padx=5)
+        ToolTip(self.btn_manual, "Set manual coordinates and validate offline via GeoDude")
 
         # Coordinates & Precision card
         coord_card = ctk.CTkFrame(main_frame, fg_color=COLORS["card_bg"],
@@ -606,7 +584,7 @@ class App(ctk.CTk):
         self._set_precision(level, detail)
 
     # ------------------------------------------------------------------
-    # Help dialog
+    # Help dialog – updated to reflect no online geocoding
     # ------------------------------------------------------------------
     def _show_help(self):
         dialog = ctk.CTkToplevel(self)
@@ -618,17 +596,18 @@ class App(ctk.CTk):
         ctk.CTkLabel(dialog, text="Help – Magnetic Declination Calculator",
                      font=("Arial", 18, "bold"), text_color=COLORS["text_primary"]).pack(pady=(20, 10))
         text = """
+        This calculator uses exclusively OFFLINE reverse geocoding
+        via GeoDude (ADM3 polygon boundaries).
+
         Locate & Calculate – One‑press button:
-           1. If Wi‑Fi database exists → gets location via Wi‑Fi (100‑500 m)
-           2. If no database exists → creates database using IP + Wi‑Fi scan, then uses it
-           3. Falls back to IP location if Wi‑Fi fails
+           1. Tries to get location via Wi‑Fi (if database exists)
+           2. Falls back to IP geolocation if Wi‑Fi fails
 
         Alternative methods:
-        Get from Address – Street level (online Nominatim).
-        Manual coordinates – Exact (user input).
+        Manual coordinates – Exact (user input), validated offline by GeoDude.
         GPS – Live serial GPS tracking.
 
-        Offline reverse geocoding: uses GeoDude with ADM3 polygon boundaries.
+        No online address lookup is performed.
         Double-click any result field to copy its content.
         F11 toggles true borderless fullscreen.
         """
@@ -640,66 +619,10 @@ class App(ctk.CTk):
                       hover_color=COLORS["accent_hover"]).pack(pady=20)
 
     # ------------------------------------------------------------------
-    # Direct Nominatim API calls (geocoding)
+    # Reverse geocoding – uses only GeoDude
     # ------------------------------------------------------------------
-    @staticmethod
-    def _nominatim_forward(address):
-        try:
-            url = "https://nominatim.openstreetmap.org/search"
-            params = {
-                "q": address,
-                "format": "json",
-                "limit": 1,
-                "addressdetails": 0
-            }
-            headers = {"User-Agent": NOMINAT_USER_AGENT}
-            resp = requests.get(url, params=params, headers=headers, timeout=10)
-            if resp.status_code == 200:
-                data = resp.json()
-                if data:
-                    item = data[0]
-                    return float(item["lat"]), float(item["lon"]), item.get("display_name", address)
-        except Exception:
-            pass
-        return None, None, None
-
-    @staticmethod
-    def _nominatim_reverse(lat, lon):
-        try:
-            url = "https://nominatim.openstreetmap.org/reverse"
-            params = {
-                "lat": lat,
-                "lon": lon,
-                "format": "json",
-                "zoom": 18,
-                "addressdetails": 0
-            }
-            headers = {"User-Agent": NOMINAT_USER_AGENT}
-            resp = requests.get(url, params=params, headers=headers, timeout=10)
-            if resp.status_code == 200:
-                data = resp.json()
-                if "display_name" in data:
-                    return data["display_name"]
-        except Exception:
-            pass
-        return None
-
-    # ------------------------------------------------------------------
-    # Geocoding helpers
-    # ------------------------------------------------------------------
-    def _forward_geocode(self, address):
-        return self._nominatim_forward(address)
-
     def _reverse_geocode(self, lat, lon):
         self.console.append(f"Reverse geocoding {lat:.6f}, {lon:.6f}...")
-        # Online first (Nominatim)
-        addr = self._nominatim_reverse(lat, lon)
-        if addr:
-            self.console.append(f"Nominatim returned: {addr}")
-            return addr
-        self.console.append("Nominatim reverse failed (or no result).")
-
-        # Offline fallback: GeoDude ADM3
         if self.use_geodude and self.geodude:
             try:
                 place = self.geodude.get_nearest(lat, lon)
@@ -709,7 +632,7 @@ class App(ctk.CTk):
                     return addr
             except Exception as e:
                 self.console.append(f"GeoDude ADM3 error: {e}")
-        self.console.append("No address found.")
+        self.console.append("No address found (GeoDude unavailable or no result).")
         return None
 
     @staticmethod
@@ -725,23 +648,8 @@ class App(ctk.CTk):
         return address, "City/District level"
 
     # ------------------------------------------------------------------
-    # Location methods
+    # Manual location setting (still validates via GeoDude)
     # ------------------------------------------------------------------
-    def _on_get_from_address(self):
-        address = self.entry_address.get().strip()
-        if not address:
-            self._set_status("Please enter an address.", "error")
-            return
-        self._set_status("Geocoding address...", "info")
-        self.update_idletasks()
-        lat, lon, name = self._forward_geocode(address)
-        if lat:
-            detail, level = self._extract_address_detail(name)
-            self._set_coordinates(lat, lon, level, detail[:100])
-            self._set_status(f"Location found: {name}", "success")
-        else:
-            self._set_status("Could not geocode address. Check input or internet.", "error")
-
     def _on_set_manual(self):
         try:
             lat = float(self.entry_lat.get().strip())
@@ -754,7 +662,7 @@ class App(ctk.CTk):
         self.entry_lat.delete(0, "end")
         self.entry_lon.delete(0, "end")
         self._set_coordinates(lat, lon, "Exact (manual input)")
-        self._set_status("Validating address...", "info")
+        self._set_status("Validating address via GeoDude...", "info")
         addr = self._reverse_geocode(lat, lon)
         if addr:
             detail, level = self._extract_address_detail(addr)
@@ -764,6 +672,9 @@ class App(ctk.CTk):
             self._set_precision("Exact (manual input)", "Address not found")
             self._set_status("Coordinates set. No address found.", "info")
 
+    # ------------------------------------------------------------------
+    # IP location (still used as fallback for coordinates)
+    # ------------------------------------------------------------------
     def _get_ip_location(self):
         if self.ip_location is not None:
             return self.ip_location

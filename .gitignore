@@ -4,3 +4,20 @@ Core\SarcnetMiniSatelliteTrackerMK1\SourceCode\Code_Authers\Custom_ProjectSource
 geonames.db
 *.geojson
 geojson/
+
+
+# Ignore pycache and other Python artifacts.
+pycache/
+
+*.pyc
+*.cpython-*.pyc
+*.cpython-312.pyc 
+*.cpython-311.pyc
+*.cpython-310.pyc
+*.reverse_geocode.cpython-312.pyc
+reverse_geocode.cpython-312.pyc
+*.cpython 
+*.pyc
+*.cython-312 
+
+Core/SarcnetMiniSatelliteTrackerMK1/SourceCode/Code_Authers/Custom_ProjectSourceCode/Nathan-Busse/CustomLibraries/GeoDudeLibrary/geodude/__pycache__/reverse_geocode.cpython-312.pyc

@@ -54,12 +54,25 @@ const int SensorType = LSM303D;   //Please uncomment this line to use the LSM303
 #define WINDUP_LIMIT 450            //Sets the total number of degrees azimuth rotation in any direction before resetting to zero
 
 //Motor pins - Don't change
-const int azFwdPin = 5;
-const int azRevPin = 6;
-const int azBrkPin = 7;
-const int elBrkPin = 8;
-const int elFwdPin = 9;
-const int elRevPin = 10;
+
+/*
+  Understanding how Sarcnet named there initializers:
+
+  az:
+      az is short for azimuth which articulates the motion of rotating (left) and or (right).
+      This will be used by the motor that is attache to the tripod.
+
+  el:
+      el is short for elavation which articulates the motion of pitching (up) and or (down).
+      This will be used by the motor that connects the antenna arm to the rotator's chasis.
+*/
+
+const int azFwdPin = 5; // L298N IN 3 pin
+const int azRevPin = 6; // L298N IN 4 pin
+const int azBrkPin = 7; // L298N Virtual ENABLE 2 pin
+const int elBrkPin = 8; // L298N Virtual ENABLE 1 pin
+const int elFwdPin = 9; // L298N IN 1 pin
+const int elRevPin = 10; // L298N IN 2 pin
 //Speaker pins
 const int spkPin = 11;    //Attach a piezo buzzer to this pin. It beeps when new calibration data arrives.
 const int gndPin = 12;    //Makes a convenient ground pin adjacent to the speaker pin
@@ -368,13 +381,13 @@ void processUserCommands(String line) {
     case 'h':                                             //Help command
       SerialPort.println("Commands:");
       SerialPort.println("az el -(0..360 0..90)");
-      SerialPort.println("r -Reset the rotator and load calibration from EEPROM");
+      SerialPort.println("r -Reboot the Arduino Nano and load calibration from its EEPROM");
       SerialPort.println("eNN.N -Run this command first before running the calibrate command."),
       ("This is how the command looks with your final answer:"), 
       ("e-20.5 or e20.5 etc."), 
       ("Read the instructions first and double check your final answer before proceeding!");
       SerialPort.println("c -Calibrate the Magnometer module, make sure to run eNN.N command first!");      
-      SerialPort.println("s -Save changes to eeprom");
+      SerialPort.println("s -Save changes to the Arduino Nano's EEPROM.");
       SerialPort.println("a -Abort");
       SerialPort.println("d -Demo");
       SerialPort.println("b -Debug");

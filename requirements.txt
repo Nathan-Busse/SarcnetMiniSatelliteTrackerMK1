@@ -1,6 +1,7 @@
 customtkinter
 geocoder
 geopandas
+matplotlib
 pynmea2
 pyserial
 pytest

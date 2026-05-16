@@ -1,0 +1,12 @@
+{
+  "port": "COM5",
+  "baud": 9600,
+  "appearance": "Dark",
+  "color_theme": "dark-blue",
+  "window_geometry": "1366x715+-8+-8",
+  "declination": 0.0,
+  "last_lat": null,
+  "last_lon": null,
+  "logging_enabled": false,
+  "auto_reconnect": false
+}

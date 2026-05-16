@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 """
-Rotator7 Control Center v3.4 — Arduino Nano + GY‑511 + WiFi‑IP geolocation + Guided Calibration
-===============================================================================================
+Rotator7 Control Center v3.6 — Arduino Nano + GY‑511 + WiFi‑IP geolocation + Pop‑up Calibration Assistant
+=========================================================================================================
+Based on SARCnet Mini Satellite-Antenna Rotator Mk1 documentation:
+  https://www.sarcnet.org/mini-satellite-antenna-rotator-mk1.html
+  https://www.sarcnet.org/mini-satellite-antenna-rotator-mk1.html#CalibrationInstructions
+
 Full‑featured interface:
   - Real‑time data streaming with live plots
-  - **Guided calibration assistant** (step‑by‑step walkthrough – ALWAYS visible)
+  - **Pop‑up guided calibration assistant** (step‑by‑step walkthrough)
   - Declination calculator (offline GeoDude)
   - Wi‑Fi scanning, BeaconDB, offline DB, IP geolocation, manual coords, GPS
   - Custom command terminal with history and live data chart
@@ -57,7 +61,7 @@ except ImportError:
     MPL_AVAILABLE = False
 
 # -------------------------- Constants --------------------------
-APP_TITLE = "Rotator7 Control Center v3.4"
+APP_TITLE = "Rotator7 Control Center v3.6"
 DEFAULT_BAUD = 115200
 CONFIG_PATH = BASE_DIR / "rotator_config.json"
 LOG_DIR = BASE_DIR / "logs"
@@ -331,7 +335,7 @@ class BeaconDBClient:
             "wifiAccessPoints": [{"macAddress": b, "signalStrength": -70} for b in bssids[:10]],
             "considerIp": False
         }
-        headers = {"User-Agent": "Rotator7ControlCenter/3.4"}
+        headers = {"User-Agent": "Rotator7ControlCenter/3.6"}
         try:
             r = requests.post(url, json=payload, headers=headers, timeout=5)
             if r.status_code == 200:
@@ -357,7 +361,7 @@ class BeaconDBClient:
                 "wifiAccessPoints": [{"macAddress": b, "signalStrength": -70, "channel": 0, "frequency": 0} for b in bssids]
             }]
         }
-        headers = {"User-Agent": "Rotator7ControlCenter/3.4", "Content-Type": "application/json"}
+        headers = {"User-Agent": "Rotator7ControlCenter/3.6", "Content-Type": "application/json"}
         try:
             r = requests.post(url, json=payload, headers=headers, timeout=10)
             if r.status_code == 200:
@@ -428,6 +432,7 @@ if SERIAL_AVAILABLE:
                 self.ser.flush()
             logger.debug(f"Sent: {cmd}")
 
+        # Predefined commands as per SARCnet documentation
         def send_help(self):              self.send_raw("h")
         def set_declination(self, dec):   self.send_raw(f"e{dec:.2f}")
         def start_calibration(self):      self.send_raw("c"); self._notify_status("Calibration started")
@@ -472,6 +477,7 @@ if SERIAL_AVAILABLE:
             if self.on_raw_line:
                 self.on_raw_line(line)
             parts = line.split(",")
+            # Debug mode: 6 floats (mx,my,mz,gx,gy,gz)
             if len(parts) == 6:
                 try:
                     vals = [float(p) for p in parts]
@@ -480,6 +486,7 @@ if SERIAL_AVAILABLE:
                     return
                 except ValueError:
                     pass
+            # Monitor mode: 8 fields (az,el,azSet,elSet,azWindup,azError,elError,windupFlag)
             if len(parts) == 8:
                 try:
                     d = {
@@ -493,6 +500,7 @@ if SERIAL_AVAILABLE:
                     return
                 except ValueError:
                     pass
+            # Calibration mode: 13 fields (sample_idx, meanX,Y,Z, minX,Y,Z, maxX,Y,Z, offsetX,Y,Z)
             if len(parts) == 13:
                 try:
                     numbers = [float(p) for p in parts]
@@ -590,7 +598,7 @@ else:
         def set_title(self, title): pass
         def set_ylabel(self, ylabel): pass
 
-# -------------------------- Macros (kept for compatibility, not used) --------------------------
+# -------------------------- Macros (kept for compatibility) --------------------------
 class MacroManager:
     def __init__(self, macro_dir=MACRO_DIR):
         self.macro_dir = macro_dir
@@ -616,50 +624,138 @@ class MacroManager:
         if path.exists():
             path.unlink()
 
-# -------------------------- Calibration Assistant (state machine) --------------------------
+# -------------------------- Calibration Assistant (SARCnet Rotator7 Protocol) --------------------------
 class CalibrationAssistant:
-    def __init__(self, controller: Rotator7Controller, log_func: Callable[[str], None]):
+    """
+    Guided calibration walkthrough for the Rotator7 firmware.
+    Based on SARCnet Mini Satellite-Antenna Rotator Mk1 documentation.
+    """
+    def __init__(self, controller: Rotator7Controller, log_func: Callable[[str], None],
+                 popup_update: Callable[[str, int], None] = None):
         self.controller = controller
         self.log_func = log_func
+        self.popup_update = popup_update
         self.active = False
+        # Sensor orientations for LSM303D calibration
         self.steps = [
-            "Place device flat (Z up)",
-            "Rotate to left side",
-            "Rotate to right side",
-            "Tilt forward",
-            "Tilt backward",
-            "Rotate 180° (Z down)"
+            "Place sensor flat with Z-axis pointing UP (level surface)",
+            "Rotate sensor 90° so Z-axis points to the LEFT (on its side)",
+            "Rotate sensor 90° so Z-axis points to the RIGHT (other side)",
+            "Tilt sensor so Z-axis points FORWARD (pitch down 90°)",
+            "Tilt sensor so Z-axis points BACKWARD (pitch up 90°)",
+            "Flip sensor so Z-axis points DOWN (upside down)"
         ]
         self.current_step = 0
 
     def start(self):
         self.active = True
         self.current_step = 0
-        self.log_func("Calibration assistant started.")
-        self.controller.start_calibration()   # send 'c' to begin
+        self.log_func("=" * 50)
+        self.log_func("CALIBRATION ASSISTANT STARTED")
+        self.log_func("The Arduino beeper will sound during calibration.")
+        self.log_func("Rotate the sensor SLOWLY through each orientation.")
+        self.log_func("=" * 50)
+        self.controller.start_calibration()   # sends 'c'
         self._next_step()
 
     def _next_step(self):
         if self.current_step < len(self.steps):
-            self.log_func(f"Step {self.current_step+1}/{len(self.steps)}: {self.steps[self.current_step]}")
-            self.log_func("Press 'Capture' when ready.")
+            step_num = self.current_step + 1
+            total = len(self.steps)
+            instruction = self.steps[self.current_step]
+            self.log_func(f"\n{'─' * 40}")
+            self.log_func(f"STEP {step_num}/{total}: {instruction}")
+            self.log_func(f"{'─' * 40}")
+            self.log_func("→ Press 'Capture' when the sensor is in position.")
+            self.log_func("→ Hold the sensor STEADY during data collection.")
+            if self.popup_update:
+                self.popup_update(f"Step {step_num}/{total}: {instruction}", self.current_step)
         else:
-            self.log_func("All steps captured. Saving to EEPROM...")
+            self.log_func("\n" + "=" * 50)
+            self.log_func("ALL ORIENTATIONS CAPTURED")
+            self.log_func("Saving calibration data to EEPROM...")
             self.controller.save_eeprom()
             self.active = False
-            self.log_func("Calibration completed.")
+            self.log_func("CALIBRATION COMPLETE – EEPROM saved.")
+            self.log_func("=" * 50)
+            if self.popup_update:
+                self.popup_update("✓ Calibration complete! EEPROM saved.", -1)
 
     def capture_step(self):
         if not self.active:
             return
+        self.log_func(f"→ Capturing orientation {self.current_step + 1}...")
         self.controller.send_raw(f"T{self.current_step}")
         self.current_step += 1
+        time.sleep(0.3)   # allow Arduino to process
         self._next_step()
 
     def abort(self):
         self.active = False
         self.controller.abort()
-        self.log_func("Calibration aborted.")
+        self.log_func("\nCALIBRATION ABORTED")
+        if self.popup_update:
+            self.popup_update("Calibration aborted.", -2)
+
+# -------------------------- Calibration Assistant Popup --------------------------
+class CalibrationAssistantPopup(ctk.CTkToplevel):
+    def __init__(self, master, assistant: CalibrationAssistant):
+        super().__init__(master)
+        self.title("Calibration Assistant")
+        self.geometry("500x300")
+        self.configure(fg_color=COLORS["bg"])
+        self.transient(master)
+        self.grab_set()
+        self.assistant = assistant
+        self.assistant.popup_update = self._update_instruction
+
+        self.instruction_label = ctk.CTkLabel(self, text="Starting...", font=("Arial", 14),
+                                             text_color=COLORS["text_primary"], wraplength=450)
+        self.instruction_label.pack(pady=20, padx=20)
+
+        self.progress = ctk.CTkProgressBar(self)
+        self.progress.set(0)
+        self.progress.pack(fill="x", padx=20, pady=10)
+
+        btn_frame = ctk.CTkFrame(self, fg_color="transparent")
+        btn_frame.pack(pady=10)
+        self.capture_btn = ctk.CTkButton(btn_frame, text="Capture Step", command=self._capture,
+                                         fg_color=COLORS["gold"], text_color="black")
+        self.capture_btn.pack(side="left", padx=5)
+        self.abort_btn = ctk.CTkButton(btn_frame, text="Abort", command=self._abort,
+                                       fg_color=COLORS["danger"])
+        self.abort_btn.pack(side="left", padx=5)
+
+        self.protocol("WM_DELETE_WINDOW", self._abort)
+
+        # Start the assistant
+        self.assistant.start()
+
+    def _update_instruction(self, message: str, step_index: int):
+        self.instruction_label.configure(text=message)
+        if step_index >= 0 and step_index < len(self.assistant.steps):
+            self.progress.set((step_index) / len(self.assistant.steps))
+            self.capture_btn.configure(state="normal")
+        elif step_index == -1:  # completed
+            self.progress.set(1.0)
+            self.capture_btn.configure(state="disabled")
+            self.abort_btn.configure(text="Close")
+        elif step_index == -2:  # aborted
+            self.capture_btn.configure(state="disabled")
+            self.abort_btn.configure(text="Close")
+            self.progress.set(0)
+
+    def _capture(self):
+        if self.assistant.active:
+            self.assistant.capture_step()
+
+    def _abort(self):
+        self.assistant.abort()
+        self.destroy()
+
+    def destroy(self):
+        self.assistant.active = False
+        super().destroy()
 
 # -------------------------- GUI Application --------------------------
 class Rotator7App(ctk.CTk):
@@ -673,21 +769,17 @@ class Rotator7App(ctk.CTk):
         ctk.set_appearance_mode(self.config.get("appearance", "Dark"))
         ctk.set_default_color_theme(self.config.get("color_theme", "dark-blue"))
 
-        # Core services
         self.log_data = DataLogger()
         self.logging_active = False
         self.macro_manager = MacroManager()
         self.command_history = CommandHistory()
 
-        # WiFi & location state
         self.wifi_scanner = WiFiScanner(log_func=self._console_log)
         self.latitude = self.config.get("last_lat")
         self.longitude = self.config.get("last_lon")
 
-        # Calibration state for terminal chart
         self.calibration_active = False
 
-        # Serial controller
         self.controller = None
         if SERIAL_AVAILABLE:
             self.controller = Rotator7Controller()
@@ -697,13 +789,8 @@ class Rotator7App(ctk.CTk):
             self.controller.on_calibration = self._on_calibration
             self.controller.on_status = self._on_status
 
-        # Calibration assistant (used by the guided walkthrough)
-        self.calib_assistant = CalibrationAssistant(
-            self.controller,
-            log_func=lambda msg: self.after(0, lambda: self._append_terminal(msg))
-        ) if self.controller else None
+        self.calib_assistant = None
 
-        # Build GUI
         self._create_layout()
         self._setup_bindings()
         self._plot_update_loop()
@@ -713,7 +800,6 @@ class Rotator7App(ctk.CTk):
 
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
-    # ---------- Layout ----------
     def _create_layout(self):
         top_bar = ctk.CTkFrame(self, fg_color=COLORS["card_bg"], corner_radius=6)
         top_bar.pack(fill="x", padx=10, pady=(10,5))
@@ -749,7 +835,6 @@ class Rotator7App(ctk.CTk):
                       width=60, fg_color="transparent", border_width=1, border_color=COLORS["secondary"],
                       text_color=COLORS["secondary"]).pack(side="left", padx=5)
 
-        # TabView
         self.tab_view = ctk.CTkTabview(self, fg_color="transparent")
         self.tab_view.pack(fill="both", expand=True, padx=10, pady=(0,10))
 
@@ -769,7 +854,6 @@ class Rotator7App(ctk.CTk):
         self.status_label = ctk.CTkLabel(status_frame, text="Ready", text_color=COLORS["text_secondary"])
         self.status_label.pack(side="left", padx=10)
 
-    # ---------- Terminal Tab (split screen + calibration chart + ALWAYS VISIBLE assistant) ----------
     def _build_terminal_tab(self):
         frame = ctk.CTkFrame(self.tab_terminal, fg_color="transparent")
         frame.pack(fill="both", expand=True, padx=10, pady=5)
@@ -793,7 +877,6 @@ class Rotator7App(ctk.CTk):
 
         self.terminal_calib_plot = LivePlotFrame(right_frame, title="Calibration Offsets", ylabel="Offset")
 
-        # Clear buttons
         btn_frame = ctk.CTkFrame(right_frame, fg_color="transparent")
         btn_frame.pack(fill="x", pady=2)
         ctk.CTkButton(btn_frame, text="Clear Plot", command=self._clear_terminal_plot,
@@ -805,32 +888,17 @@ class Rotator7App(ctk.CTk):
                       border_color=COLORS["danger"], text_color=COLORS["danger"],
                       font=("Arial", 10)).pack(side="left", padx=2)
 
-        # ---- Calibration Assistant Panel (ALWAYS VISIBLE) ----
-        self.assist_panel = ctk.CTkFrame(frame, fg_color=COLORS["card_bg"], corner_radius=8, border_width=1,
-                                         border_color=COLORS["card_border"])
-        self.assist_panel.pack(fill="x", pady=5, before=None)   # will appear between split_frame and input_frame
+        launch_frame = ctk.CTkFrame(frame, fg_color=COLORS["card_bg"], corner_radius=8, border_width=1,
+                                    border_color=COLORS["card_border"])
+        launch_frame.pack(fill="x", pady=5)
 
-        self.assist_label = ctk.CTkLabel(self.assist_panel, text="Calibration Assistant ready.",
-                                         font=("Arial", 12), text_color=COLORS["text_primary"])
-        self.assist_label.pack(pady=8, padx=10)
+        ctk.CTkLabel(launch_frame, text="Guided Calibration", font=("Arial", 13, "bold"),
+                     text_color=COLORS["text_primary"]).pack(side="left", padx=10, pady=5)
+        self.btn_launch_assistant = ctk.CTkButton(launch_frame, text="Launch Assistant",
+                                                  command=self._launch_calib_popup,
+                                                  fg_color=COLORS["accent"])
+        self.btn_launch_assistant.pack(side="left", padx=10, pady=5)
 
-        assist_btn_frame = ctk.CTkFrame(self.assist_panel, fg_color="transparent")
-        assist_btn_frame.pack(pady=5)
-        self.btn_start_assist = ctk.CTkButton(assist_btn_frame, text="Start Guided Calibration",
-                                              command=self._start_calib_assistant,
-                                              fg_color=COLORS["accent"])
-        self.btn_start_assist.pack(side="left", padx=5)
-        self.btn_capture_step = ctk.CTkButton(assist_btn_frame, text="Capture Step",
-                                              command=self._capture_calib_step,
-                                              fg_color=COLORS["gold"], text_color="black",
-                                              state="disabled")
-        self.btn_capture_step.pack(side="left", padx=5)
-        self.btn_abort_assist = ctk.CTkButton(assist_btn_frame, text="Abort",
-                                              command=self._abort_calib_assistant,
-                                              fg_color=COLORS["danger"])
-        self.btn_abort_assist.pack(side="left", padx=5)
-
-        # Input frame (below everything)
         input_frame = ctk.CTkFrame(frame, fg_color="transparent")
         input_frame.pack(fill="x", pady=(5,0))
         self.cmd_entry = ctk.CTkEntry(input_frame, font=("Consolas", 12), placeholder_text="Type command...")
@@ -845,7 +913,7 @@ class Rotator7App(ctk.CTk):
                       width=80, fg_color="transparent", border_width=1,
                       border_color=COLORS["secondary"], text_color=COLORS["secondary"]).pack(side="left", padx=5)
 
-        self.terminal_calib_plot.pack_forget()   # hidden until calibration starts
+        self.terminal_calib_plot.pack_forget()
 
     def _clear_terminal_plot(self):
         if self.calibration_active:
@@ -854,36 +922,19 @@ class Rotator7App(ctk.CTk):
             self.terminal_plot.clear()
 
     def _append_terminal(self, msg):
-        """Thread‑safe append to terminal output."""
         self.terminal_output.insert("end", msg + "\n")
         self.terminal_output.see("end")
 
-    # ---------- Calibration Assistant UI actions ----------
-    def _start_calib_assistant(self):
-        if not self.calib_assistant:
+    def _launch_calib_popup(self):
+        if not self.controller or not self.controller.is_connected:
+            self._status_msg("Connect to the device first.")
             return
-        self.btn_start_assist.configure(state="disabled")
-        self.btn_capture_step.configure(state="normal")
-        self.assist_label.configure(text="Starting calibration... follow terminal instructions.")
-        self.calib_assistant.start()
+        self.calib_assistant = CalibrationAssistant(
+            self.controller,
+            log_func=lambda msg: self.after(0, lambda: self._append_terminal(msg))
+        )
+        CalibrationAssistantPopup(self, self.calib_assistant)
 
-    def _capture_calib_step(self):
-        if self.calib_assistant and self.calib_assistant.active:
-            self.calib_assistant.capture_step()
-        # Check if assistant finished
-        if not self.calib_assistant.active:
-            self.btn_start_assist.configure(state="normal")
-            self.btn_capture_step.configure(state="disabled")
-            self.assist_label.configure(text="Calibration completed.")
-
-    def _abort_calib_assistant(self):
-        if self.calib_assistant:
-            self.calib_assistant.abort()
-        self.btn_start_assist.configure(state="normal")
-        self.btn_capture_step.configure(state="disabled")
-        self.assist_label.configure(text="Calibration aborted.")
-
-    # ---------- Location Tab ----------
     def _build_location_tab(self):
         frame = ctk.CTkFrame(self.tab_location, fg_color="transparent")
         frame.pack(fill="both", expand=True, padx=10, pady=5)
@@ -930,7 +981,6 @@ class Rotator7App(ctk.CTk):
             self.lbl_coords.configure(text=f"Lat: {self.latitude:.6f}  Lon: {self.longitude:.6f}")
             self.lbl_precision.configure(text="Source: Saved")
 
-    # ---------- Declination Tab ----------
     def _build_declination_tab(self):
         frame = ctk.CTkFrame(self.tab_decl, fg_color="transparent")
         frame.pack(fill="both", expand=True, padx=10, pady=5)
@@ -974,13 +1024,11 @@ class Rotator7App(ctk.CTk):
                 self.lon_entry.insert(0, f"{self.longitude:.6f}")
             self._calc_declination()
 
-    # ---------- Bindings ----------
     def _setup_bindings(self):
         self.bind("<F5>", lambda e: self._refresh_ports())
         self.bind("<Control-l>", lambda e: self._toggle_logging())
         self.bind("<Control-r>", lambda e: self._safe_command(self.controller.reset)())
 
-    # ---------- Plot update timer ----------
     def _plot_update_loop(self):
         if hasattr(self, 'terminal_plot') and not self.calibration_active:
             self.terminal_plot.refresh()
@@ -988,12 +1036,10 @@ class Rotator7App(ctk.CTk):
             self.terminal_calib_plot.refresh()
         self.after(100, self._plot_update_loop)
 
-    # ---------- Console log helper ----------
     def _console_log(self, msg):
         self.after(0, lambda: self.location_console.insert("end", msg + "\n"))
         self.after(0, lambda: self.location_console.see("end"))
 
-    # ---------- Serial callbacks ----------
     def _on_raw_line(self, line):
         self.after(0, lambda: self.terminal_output.insert("end", line + "\n"))
         self.after(0, lambda: self.terminal_output.see("end"))
@@ -1024,8 +1070,6 @@ class Rotator7App(ctk.CTk):
                               d["azWindup"], d["azError"], d["elError"])
 
     def _on_calibration(self, data):
-        if hasattr(self, 'calib_output'):
-            self.after(0, lambda: self.calib_output.insert("end", f"Calib data: {data}\n"))
         if self.logging_active and self.log_data.mode == "calibration":
             self.log_data.log(*data)
         if self.calibration_active and hasattr(self, 'terminal_calib_plot'):
@@ -1066,7 +1110,6 @@ class Rotator7App(ctk.CTk):
     def _status_msg(self, msg):
         self.status_label.configure(text=msg)
 
-    # ---------- Connection toggle ----------
     def _toggle_connect(self):
         if self.controller and self.controller.is_connected:
             self.controller.disconnect()
@@ -1130,7 +1173,6 @@ class Rotator7App(ctk.CTk):
                 self._status_msg(f"Error: {e}")
         return wrapper
 
-    # ---------- Location helpers ----------
     def _update_coord_display(self, lat, lon, source, detail=""):
         self.latitude = lat
         self.longitude = lon

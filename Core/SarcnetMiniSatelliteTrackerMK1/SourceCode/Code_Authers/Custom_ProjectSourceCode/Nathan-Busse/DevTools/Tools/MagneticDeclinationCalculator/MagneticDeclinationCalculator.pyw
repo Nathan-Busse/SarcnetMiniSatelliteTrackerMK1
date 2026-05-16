@@ -1,16 +1,18 @@
 #!/usr/bin/env python3
 """
-Rotator7 Control Center v2.0 — Full‑featured interface for Arduino Nano + GY‑511 (LSM303D)
-===========================================================================================
-- Real‑time data streaming (debug / monitor / calibration) with live plots
-- Calibration assistant with step‑by‑step guidance
-- EEPROM read / write / clear
-- Macro recording, playback, and editing
-- CSV data logging
-- Declination calculator (offline GeoDude)
-- Custom command terminal with history, autocomplete, and piping
-- Persistent configuration, appearance themes
-- Comprehensive error handling and reconnection
+Rotator7 Control Center v3.0 — Arduino Nano + GY‑511 + WiFi‑IP geolocation
+===========================================================================
+Full‑featured interface:
+  - Real‑time data streaming (debug / monitor / calibration) with live plots
+  - Calibration assistant with step‑by‑step guidance
+  - EEPROM read / write / clear
+  - Macro recording, playback, and editing
+  - CSV data logging
+  - Declination calculator (offline GeoDude)
+  - Wi‑Fi scanning, BeaconDB, offline DB, IP geolocation, manual coords, GPS
+  - Custom command terminal with history
+  - Persistent configuration, appearance themes
+  - Comprehensive error handling and reconnection
 """
 
 import os, sys, locale, threading, time, datetime, sqlite3, subprocess, re, json, platform, queue
@@ -24,7 +26,7 @@ from typing import Optional, Tuple, List, Callable, Dict, Any, Union
 import customtkinter as ctk
 import requests
 
-# -------------------------- Serial / GPS imports (graceful degradation) --------------------------
+# -------------------------- Serial / GPS imports --------------------------
 try:
     import serial
     import serial.tools.list_ports
@@ -58,11 +60,12 @@ except ImportError:
     MPL_AVAILABLE = False
 
 # -------------------------- Constants --------------------------
-APP_TITLE = "Rotator7 Control Center v2.0"
+APP_TITLE = "Rotator7 Control Center v3.0"
 DEFAULT_BAUD = 115200
 CONFIG_PATH = BASE_DIR / "rotator_config.json"
 LOG_DIR = BASE_DIR / "logs"
 MACRO_DIR = BASE_DIR / "macros"
+WIFI_DB_PATH = BASE_DIR / "wifi_location.db"
 HISTORY_SIZE = 300
 
 COLORS = {
@@ -112,7 +115,7 @@ class ConfigManager:
             "baud": DEFAULT_BAUD,
             "appearance": "Dark",
             "color_theme": "dark-blue",
-            "window_geometry": "1100x800",
+            "window_geometry": "1200x850",
             "declination": 0.0,
             "last_lat": None,
             "last_lon": None,
@@ -213,6 +216,174 @@ class DataLogger:
             self.writer = None
             logger.info(f"Logging stopped: {self.filename}")
             self.filename = None
+
+# -------------------------- WiFi Scanner --------------------------
+class WiFiScanner:
+    def __init__(self, log_func=None):
+        self.log = log_func or logger.info
+        self.bssids = []
+        self.platform = platform.system()
+        self.raw_output = ""
+
+    def scan(self) -> List[str]:
+        self.bssids = []
+        self.raw_output = ""
+        try:
+            if self.platform == "Windows":
+                cmds = [
+                    ['netsh', 'wlan', 'show', 'networks', 'mode=bssid'],
+                    ['netsh', 'wlan', 'show', 'networks', 'mode=bssid', 'format=list']
+                ]
+                for cmd in cmds:
+                    res = self._try_command(cmd)
+                    if res:
+                        self.raw_output = res
+                        break
+                if not self.raw_output:
+                    self.log("netsh failed")
+                    return []
+
+            elif self.platform == "Linux":
+                cmds = [['sudo', 'iwlist', 'scan'], ['iwlist', 'scan']]
+                for cmd in cmds:
+                    res = self._try_command(cmd)
+                    if res:
+                        self.raw_output = res
+                        break
+                if not self.raw_output:
+                    self.log("iwlist failed")
+                    return []
+
+            elif self.platform == "Darwin":
+                cmds = [
+                    ['airport', '-s'],
+                    ['/System/Library/PrivateFrameworks/Apple80211.framework/Versions/Current/Resources/airport', '-s']
+                ]
+                for cmd in cmds:
+                    res = self._try_command(cmd)
+                    if res:
+                        self.raw_output = res
+                        break
+                if not self.raw_output:
+                    self.log("airport failed")
+                    return []
+
+        except Exception as e:
+            self.log(f"Scan error: {e}")
+            return []
+
+        if self.raw_output:
+            self.log(f"Raw scan captured ({len(self.raw_output)} chars)")
+        return self._extract_bssids()
+
+    def _try_command(self, command: list) -> Optional[str]:
+        try:
+            proc = subprocess.run(command, capture_output=True, text=True, timeout=10)
+            if proc.returncode == 0 and proc.stdout.strip():
+                return proc.stdout
+        except Exception:
+            pass
+        return None
+
+    def _extract_bssids(self) -> List[str]:
+        patterns = [
+            r'BSSID\s+\d+\s+:\s+(([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2})',
+            r'BSSID\s+:\s+(([0-9A-Fa-f]{2}-){5}[0-9A-Fa-f]{2})',
+            r'BSSID\s+:\s+(([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2})',
+            r'Address: (([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2})',
+            r'(([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2})',
+            r'(([0-9A-Fa-f]{2}[: -]){5}[0-9A-Fa-f]{2})'
+        ]
+        for i, pat in enumerate(patterns, 1):
+            matches = re.findall(pat, self.raw_output)
+            if matches:
+                self.bssids = [m[0].replace('-', ':').upper() for m in matches]
+                self.log(f"Pattern #{i} matched, found {len(self.bssids)} BSSIDs")
+                return self.bssids
+        self.log("No BSSID pattern matched")
+        return []
+
+    def get_location_from_db(self, db_path: Path) -> Optional[Tuple[float, float]]:
+        if not self.bssids or not db_path.exists():
+            return None
+        try:
+            with sqlite3.connect(str(db_path)) as conn:
+                cur = conn.cursor()
+                locs = []
+                for b in self.bssids:
+                    cur.execute('SELECT lat, lon FROM access_points WHERE bssid = ?', (b,))
+                    row = cur.fetchone()
+                    if row:
+                        locs.append((row[0], row[1]))
+                if locs:
+                    avg_lat = sum(lat for lat, lon in locs) / len(locs)
+                    avg_lon = sum(lon for lat, lon in locs) / len(locs)
+                    return avg_lat, avg_lon
+        except Exception as e:
+            self.log(f"DB lookup error: {e}")
+        return None
+
+# -------------------------- BeaconDB Client --------------------------
+class BeaconDBClient:
+    @staticmethod
+    def geolocate(bssids: list) -> Tuple[Optional[float], Optional[float], Optional[float], str]:
+        if not bssids:
+            return None, None, None, "No BSSIDs"
+        url = "https://api.beacondb.net/v1/geolocate"
+        payload = {
+            "wifiAccessPoints": [{"macAddress": b, "signalStrength": -70} for b in bssids[:10]],
+            "considerIp": False
+        }
+        headers = {"User-Agent": "Rotator7ControlCenter/3.0"}
+        try:
+            r = requests.post(url, json=payload, headers=headers, timeout=5)
+            if r.status_code == 200:
+                data = r.json()
+                loc = data.get("location", {})
+                if "lat" in loc and "lng" in loc:
+                    return loc["lat"], loc["lng"], data.get("accuracy", 150), "success"
+                return None, None, None, "200 but no location"
+            elif r.status_code == 404:
+                return None, None, None, "404 – no data for these BSSIDs"
+            else:
+                return None, None, None, f"Error {r.status_code}"
+        except Exception:
+            return None, None, None, "Network error"
+
+    @staticmethod
+    def submit(bssids: list, lat: float, lon: float, callback: Callable[[str], None]):
+        url = "https://api.beacondb.net/v2/geosubmit"
+        payload = {
+            "reports": [{
+                "timestamp": int(time.time() * 1000),
+                "position": {"latitude": lat, "longitude": lon, "accuracy": 5},
+                "wifiAccessPoints": [{"macAddress": b, "signalStrength": -70, "channel": 0, "frequency": 0} for b in bssids]
+            }]
+        }
+        headers = {"User-Agent": "Rotator7ControlCenter/3.0", "Content-Type": "application/json"}
+        try:
+            r = requests.post(url, json=payload, headers=headers, timeout=10)
+            if r.status_code == 200:
+                callback("Success – data accepted")
+            else:
+                callback(f"HTTP {r.status_code}")
+        except Exception as e:
+            callback(f"Error: {str(e)[:20]}")
+
+# -------------------------- IP Geolocation --------------------------
+def get_ip_location():
+    try:
+        r = requests.get('http://ip-api.com/json/', timeout=10)
+        if r.status_code == 200:
+            data = r.json()
+            if data.get('status') == 'success':
+                lat = float(data['lat'])
+                lon = float(data['lon'])
+                desc = f"{data.get('city','?')}, {data.get('country','?')}"
+                return lat, lon, desc
+    except:
+        pass
+    return None, None, None
 
 # -------------------------- Arduino Interface (Rotator7 Protocol) --------------------------
 if SERIAL_AVAILABLE:
@@ -382,7 +553,6 @@ if MPL_AVAILABLE:
             buf.append(value)
             if len(buf) > self.max_points:
                 buf.pop(0)
-            # Keep timestamps in sync
             if len(self.timestamps) == 0 or len(self.timestamps) < len(buf):
                 self.timestamps.append(time.time())
             elif len(self.timestamps) > len(buf):
@@ -405,7 +575,6 @@ if MPL_AVAILABLE:
             for i, (label, buf) in enumerate(self.data_buffers.items()):
                 if not buf:
                     continue
-                # Truncate rel_time to length of buf
                 plot_len = min(len(rel_time), len(buf))
                 self.ax.plot(rel_time[:plot_len], buf[:plot_len], label=label,
                              linewidth=1.2, color=colors[i % len(colors)])
@@ -453,7 +622,7 @@ class MacroManager:
         if path.exists():
             path.unlink()
 
-# -------------------------- Calibration Assistant (State Machine) --------------------------
+# -------------------------- Calibration Assistant --------------------------
 class CalibrationAssistant:
     def __init__(self, controller: Rotator7Controller, log_func: Callable[[str], None]):
         self.controller = controller
@@ -484,7 +653,7 @@ class CalibrationAssistant:
     def capture_step(self):
         if not self.active:
             return
-        self.controller.send_raw(f"T{self.current_step}")   # custom trigger command
+        self.controller.send_raw(f"T{self.current_step}")
         self.current_step += 1
         self._next_step()
 
@@ -499,8 +668,8 @@ class Rotator7App(ctk.CTk):
         super().__init__()
         self.title(APP_TITLE)
         self.config = ConfigManager()
-        self.geometry(self.config.get("window_geometry", "1100x800"))
-        self.minsize(900, 600)
+        self.geometry(self.config.get("window_geometry", "1200x850"))
+        self.minsize(1000, 700)
         self.configure(fg_color=COLORS["bg"])
         ctk.set_appearance_mode(self.config.get("appearance", "Dark"))
         ctk.set_default_color_theme(self.config.get("color_theme", "dark-blue"))
@@ -510,6 +679,11 @@ class Rotator7App(ctk.CTk):
         self.logging_active = False
         self.macro_manager = MacroManager()
         self.command_history = CommandHistory()
+
+        # WiFi & location state
+        self.wifi_scanner = WiFiScanner(log_func=self._console_log)
+        self.latitude = self.config.get("last_lat")
+        self.longitude = self.config.get("last_lon")
 
         # Serial controller
         self.controller = None
@@ -522,14 +696,11 @@ class Rotator7App(ctk.CTk):
             self.controller.on_status = self._on_status
         self.calib_assistant = CalibrationAssistant(self.controller, self._status_msg) if self.controller else None
 
-        # GUI building
+        # Build GUI
         self._create_layout()
         self._setup_bindings()
-
-        # Periodic plot updates (every 100ms)
         self._plot_update_loop()
 
-        # Auto-reconnect if configured
         if self.config.get("auto_reconnect", False):
             self.auto_reconnect()
 
@@ -537,11 +708,10 @@ class Rotator7App(ctk.CTk):
 
     # ---------- Layout ----------
     def _create_layout(self):
-        # Top bar: serial settings + quick actions
+        # Top bar
         top_bar = ctk.CTkFrame(self, fg_color=COLORS["card_bg"], corner_radius=6)
         top_bar.pack(fill="x", padx=10, pady=(10,5))
 
-        # Serial port & baud
         ctk.CTkLabel(top_bar, text="Port:", text_color=COLORS["text_secondary"]).pack(side="left", padx=5)
         self.port_var = ctk.StringVar(value=self.config.get("port", ""))
         self.port_combo = ctk.CTkComboBox(top_bar, values=SerialPortEnumerator.list_ports(),
@@ -556,36 +726,33 @@ class Rotator7App(ctk.CTk):
         ctk.CTkComboBox(top_bar, values=["9600","19200","38400","57600","115200","230400"],
                         variable=self.baud_var, width=90).pack(side="left", padx=5)
 
-        # Connect / Disconnect
         self.connect_btn = ctk.CTkButton(top_bar, text="Connect", command=self._toggle_connect,
                                          width=90, fg_color=COLORS["accent"])
         self.connect_btn.pack(side="left", padx=10)
         self.connection_status = ctk.CTkLabel(top_bar, text="Disconnected", text_color=COLORS["danger"])
         self.connection_status.pack(side="left", padx=10)
 
-        # Logging toggle
         self.logging_btn = ctk.CTkButton(top_bar, text="Start Log", command=self._toggle_logging,
                                          width=80, fg_color="transparent", border_width=1,
                                          border_color=COLORS["gold"], text_color=COLORS["gold"])
         self.logging_btn.pack(side="left", padx=10)
 
-        # Quick actions
         ctk.CTkButton(top_bar, text="Reset", command=self._safe_command(self.controller.reset),
                       width=60, fg_color=COLORS["danger"]).pack(side="left", padx=5)
         ctk.CTkButton(top_bar, text="Help", command=self._safe_command(self.controller.send_help),
                       width=60, fg_color="transparent", border_width=1, border_color=COLORS["secondary"],
                       text_color=COLORS["secondary"]).pack(side="left", padx=5)
 
-        # Main content: TabView
+        # TabView
         self.tab_view = ctk.CTkTabview(self, fg_color="transparent")
         self.tab_view.pack(fill="both", expand=True, padx=10, pady=(0,10))
 
-        # Tabs
         self.tab_terminal = self.tab_view.add("Terminal")
         self.tab_debug = self.tab_view.add("Debug Stream")
         self.tab_monitor = self.tab_view.add("Monitor")
         self.tab_calib = self.tab_view.add("Calibration")
         self.tab_macros = self.tab_view.add("Macros")
+        self.tab_location = self.tab_view.add("Location")
         self.tab_decl = self.tab_view.add("Declination")
 
         self._build_terminal_tab()
@@ -593,7 +760,8 @@ class Rotator7App(ctk.CTk):
         self._build_monitor_tab()
         self._build_calib_tab()
         self._build_macros_tab()
-        self._build_declination_tab()
+        self._build_location_tab()      # NEW – all WiFi/IP/GPS features
+        self._build_declination_tab()  # manual declination + send to rotator
 
         # Status bar
         status_frame = ctk.CTkFrame(self, fg_color=COLORS["card_bg"], corner_radius=6)
@@ -606,12 +774,10 @@ class Rotator7App(ctk.CTk):
         frame = ctk.CTkFrame(self.tab_terminal, fg_color="transparent")
         frame.pack(fill="both", expand=True, padx=10, pady=5)
 
-        # Output text box
         self.terminal_output = ctk.CTkTextbox(frame, font=("Consolas", 11), fg_color="#0d1117",
                                               text_color="#c9d1d9", border_width=0, corner_radius=8)
         self.terminal_output.pack(fill="both", expand=True, pady=(0,5))
 
-        # Input frame
         input_frame = ctk.CTkFrame(frame, fg_color="transparent")
         input_frame.pack(fill="x")
         self.cmd_entry = ctk.CTkEntry(input_frame, font=("Consolas", 12), placeholder_text="Type command...")
@@ -631,15 +797,12 @@ class Rotator7App(ctk.CTk):
         frame = ctk.CTkFrame(self.tab_debug, fg_color="transparent")
         frame.pack(fill="both", expand=True, padx=10, pady=5)
 
-        # Plot for magnetometer
         self.debug_plot_mag = LivePlotFrame(frame, title="Magnetometer (mx, my, mz)", ylabel="Raw")
         self.debug_plot_mag.pack(fill="both", expand=True, pady=(0,5))
 
-        # Plot for gyroscope
         self.debug_plot_gyro = LivePlotFrame(frame, title="Gyroscope (gx, gy, gz)", ylabel="Raw")
         self.debug_plot_gyro.pack(fill="both", expand=True, pady=(0,5))
 
-        # Control buttons
         ctrl = ctk.CTkFrame(frame, fg_color="transparent")
         ctrl.pack(fill="x", pady=5)
         ctk.CTkButton(ctrl, text="Start Debug", command=self._safe_command(self.controller.start_debug),
@@ -670,7 +833,6 @@ class Rotator7App(ctk.CTk):
                       width=80, fg_color="transparent", border_width=1, border_color=COLORS["secondary"],
                       text_color=COLORS["secondary"]).pack(side="left", padx=5)
 
-        # Position setter
         pos_frame = ctk.CTkFrame(frame, fg_color="transparent")
         pos_frame.pack(fill="x", pady=5)
         ctk.CTkLabel(pos_frame, text="AZ:", text_color=COLORS["text_secondary"]).pack(side="left")
@@ -712,7 +874,6 @@ class Rotator7App(ctk.CTk):
         frame = ctk.CTkFrame(self.tab_macros, fg_color="transparent")
         frame.pack(fill="both", expand=True, padx=10, pady=5)
 
-        # Macro list
         list_frame = ctk.CTkFrame(frame, fg_color="transparent")
         list_frame.pack(side="left", fill="y", padx=(0,10))
         ctk.CTkLabel(list_frame, text="Saved Macros", font=("Arial",12,"bold"),
@@ -723,7 +884,6 @@ class Rotator7App(ctk.CTk):
         self.macro_listbox.pack(fill="both", expand=True)
         self._refresh_macro_list()
 
-        # Macro editor
         editor_frame = ctk.CTkFrame(frame, fg_color="transparent")
         editor_frame.pack(side="left", fill="both", expand=True)
         ctk.CTkLabel(editor_frame, text="Macro Commands (one per line)", text_color=COLORS["text_secondary"]).pack(anchor="w")
@@ -746,7 +906,58 @@ class Rotator7App(ctk.CTk):
         ctk.CTkButton(btn_frame, text="Run", command=self._run_macro, width=60,
                       fg_color=COLORS["gold"], text_color="black").pack(side="left", padx=2)
 
-    # ---------- Declination Tab ----------
+    # ---------- Location Tab (WiFi, BeaconDB, offline DB, IP, GPS, manual) ----------
+    def _build_location_tab(self):
+        frame = ctk.CTkFrame(self.tab_location, fg_color="transparent")
+        frame.pack(fill="both", expand=True, padx=10, pady=5)
+
+        # Console for location logs
+        self.location_console = ctk.CTkTextbox(frame, height=6, font=("Consolas", 10),
+                                               fg_color="#0d1117", text_color="#c9d1d9",
+                                               border_width=0, corner_radius=8)
+        self.location_console.pack(fill="both", expand=True, pady=(0,5))
+
+        # Info card with coordinates
+        info_card = ctk.CTkFrame(frame, fg_color=COLORS["card_bg"], corner_radius=8)
+        info_card.pack(fill="x", pady=5, ipady=5)
+        ctk.CTkLabel(info_card, text="Current Coordinates", font=("Arial",14,"bold"),
+                     text_color=COLORS["text_primary"]).pack(anchor="w", padx=10, pady=(5,0))
+        self.lbl_coords = ctk.CTkLabel(info_card, text="Not set", text_color=COLORS["text_secondary"])
+        self.lbl_coords.pack(anchor="w", padx=10, pady=2)
+        self.lbl_precision = ctk.CTkLabel(info_card, text="Source: –", text_color=COLORS["text_secondary"])
+        self.lbl_precision.pack(anchor="w", padx=10, pady=(0,5))
+
+        # Buttons row 1
+        btn_row1 = ctk.CTkFrame(frame, fg_color="transparent")
+        btn_row1.pack(fill="x", pady=5)
+        ctk.CTkButton(btn_row1, text="Auto-Locate", command=self._auto_locate,
+                      width=120, fg_color=COLORS["accent"]).pack(side="left", padx=5)
+        ctk.CTkButton(btn_row1, text="GPS", command=self._toggle_gps,
+                      width=80, fg_color=COLORS["secondary"]).pack(side="left", padx=5)
+        ctk.CTkButton(btn_row1, text="Manual", command=self._manual_coords,
+                      width=80, fg_color="transparent", border_width=1,
+                      border_color=COLORS["secondary"], text_color=COLORS["secondary"]).pack(side="left", padx=5)
+        ctk.CTkButton(btn_row1, text="Calibrate Wi‑Fi", command=self._calibrate_wifi_popup,
+                      width=120, fg_color="transparent", border_width=1,
+                      border_color=COLORS["gold"], text_color=COLORS["gold"]).pack(side="left", padx=5)
+
+        # Buttons row 2
+        btn_row2 = ctk.CTkFrame(frame, fg_color="transparent")
+        btn_row2.pack(fill="x", pady=5)
+        ctk.CTkButton(btn_row2, text="Submit to BeaconDB", command=self._submit_beacondb,
+                      width=140, fg_color="transparent", border_width=1,
+                      border_color=COLORS["accent"], text_color=COLORS["accent"]).pack(side="left", padx=5)
+        ctk.CTkButton(btn_row2, text="Show on Map", command=self._show_on_map,
+                      width=100, fg_color="transparent", border_width=1,
+                      border_color=COLORS["secondary"], text_color=COLORS["secondary"]).pack(side="left", padx=5)
+        ctk.CTkButton(btn_row2, text="Send to Rotator", command=self._send_location_decl,
+                      width=120, fg_color=COLORS["gold"], text_color="black").pack(side="left", padx=5)
+
+        # Update fields if saved coords exist
+        if self.latitude is not None:
+            self._update_coord_display(self.latitude, self.longitude, "Saved")
+
+    # ---------- Declination Tab (manual calculator + GPS) ----------
     def _build_declination_tab(self):
         frame = ctk.CTkFrame(self.tab_decl, fg_color="transparent")
         frame.pack(fill="both", expand=True, padx=10, pady=5)
@@ -768,13 +979,11 @@ class Rotator7App(ctk.CTk):
         ctk.CTkButton(info_frame, text="Send to Rotator", command=self._send_decl_to_rotator,
                       width=120, fg_color=COLORS["secondary"]).pack(side="left", padx=10)
 
-        # Prefill with saved coordinates
         if self.config.get("last_lat"):
             self.lat_entry.insert(0, str(self.config["last_lat"]))
         if self.config.get("last_lon"):
             self.lon_entry.insert(0, str(self.config["last_lon"]))
 
-        # Also a quick GPS button if available
         if SERIAL_AVAILABLE:
             ctk.CTkButton(info_frame, text="GPS", command=self._gps_get_coords,
                           width=60, fg_color="transparent", border_width=1,
@@ -794,15 +1003,17 @@ class Rotator7App(ctk.CTk):
             self.monitor_plot.refresh()
         self.after(100, self._plot_update_loop)
 
-    # ---------- Serial callbacks (thread‑safe) ----------
+    # ---------- Console log helper for location tab ----------
+    def _console_log(self, msg):
+        self.after(0, lambda: self.location_console.insert("end", msg + "\n"))
+        self.after(0, lambda: self.location_console.see("end"))
+
+    # ---------- Serial callbacks ----------
     def _on_raw_line(self, line):
-        self.after(0, lambda: self._append_terminal(line))
+        self.after(0, lambda: self.terminal_output.insert("end", line + "\n"))
+        self.after(0, lambda: self.terminal_output.see("end"))
         if self.logging_active:
             self.log_data.log(line)
-
-    def _append_terminal(self, text):
-        self.terminal_output.insert("end", text + "\n")
-        self.terminal_output.see("end")
 
     def _on_debug(self, mx, my, mz, gx, gy, gz):
         self.after(0, lambda: self._update_debug_plots(mx, my, mz, gx, gy, gz))
@@ -830,13 +1041,9 @@ class Rotator7App(ctk.CTk):
         self.monitor_plot.add_data("EL_set", d["elSet"])
 
     def _on_calibration(self, data):
-        self.after(0, lambda: self._append_calib(f"Calib data: {data}"))
+        self.after(0, lambda: self.calib_output.insert("end", f"Calib data: {data}\n"))
         if self.logging_active and self.log_data.mode == "calibration":
             self.log_data.log(*data)
-
-    def _append_calib(self, text):
-        self.calib_output.insert("end", text + "\n")
-        self.calib_output.see("end")
 
     def _on_status(self, msg):
         self.after(0, lambda: self._status_msg(msg))
@@ -844,7 +1051,7 @@ class Rotator7App(ctk.CTk):
     def _status_msg(self, msg):
         self.status_label.configure(text=msg)
 
-    # ---------- Serial connection toggle ----------
+    # ---------- Connection toggle ----------
     def _toggle_connect(self):
         if self.controller and self.controller.is_connected:
             self.controller.disconnect()
@@ -865,12 +1072,10 @@ class Rotator7App(ctk.CTk):
             except Exception as e:
                 self._status_msg(f"Connection error: {e}")
 
-    # ---------- Port refresh ----------
     def _refresh_ports(self):
         ports = SerialPortEnumerator.list_ports()
         self.port_combo.configure(values=ports)
 
-    # ---------- Logging toggle ----------
     def _toggle_logging(self):
         if self.logging_active:
             self.log_data.stop()
@@ -878,15 +1083,12 @@ class Rotator7App(ctk.CTk):
             self.logging_active = False
             self._status_msg("Logging stopped")
         else:
-            # Determine mode based on active stream
             mode = "raw"
-            # (could be smarter)
             self.log_data.start(mode)
             self.logging_btn.configure(text="Stop Log", text_color=COLORS["danger"])
             self.logging_active = True
             self._status_msg(f"Logging started ({mode})")
 
-    # ---------- Command entry ----------
     def _send_command(self, event=None):
         cmd = self.cmd_entry.get().strip()
         if not cmd:
@@ -902,7 +1104,6 @@ class Rotator7App(ctk.CTk):
         self.cmd_entry.delete(0, "end")
         self.cmd_entry.insert(0, self.command_history.down())
 
-    # ---------- Safe execution wrapper ----------
     def _safe_command(self, func):
         def wrapper():
             if not self.controller or not self.controller.is_connected:
@@ -914,7 +1115,6 @@ class Rotator7App(ctk.CTk):
                 self._status_msg(f"Error: {e}")
         return wrapper
 
-    # ---------- Monitor position set ----------
     def _set_position(self):
         try:
             az = float(self.az_entry.get())
@@ -923,7 +1123,6 @@ class Rotator7App(ctk.CTk):
         except ValueError:
             self._status_msg("Invalid AZ/EL")
 
-    # ---------- Calibration assistant ----------
     def _start_calib(self):
         if self.calib_assistant:
             self.calib_assistant.start()
@@ -987,7 +1186,162 @@ class Rotator7App(ctk.CTk):
             self.after(0, lambda: self._status_msg("Macro finished"))
         threading.Thread(target=execute, daemon=True).start()
 
-    # ---------- Declination ----------
+    # ---------- Location helpers ----------
+    def _update_coord_display(self, lat, lon, source, detail=""):
+        self.latitude = lat
+        self.longitude = lon
+        self.config.set("last_lat", lat)
+        self.config.set("last_lon", lon)
+        self.lbl_coords.configure(text=f"Lat: {lat:.6f}  Lon: {lon:.6f}")
+        self.lbl_precision.configure(text=f"Source: {source}{' (' + detail + ')' if detail else ''}")
+        # Also update declination tab entries
+        self.lat_entry.delete(0, "end")
+        self.lon_entry.delete(0, "end")
+        self.lat_entry.insert(0, f"{lat:.6f}")
+        self.lon_entry.insert(0, f"{lon:.6f}")
+        self._calc_declination()
+
+    def _auto_locate(self):
+        self._console_log("Starting auto-locate...")
+        threading.Thread(target=self._auto_locate_thread, daemon=True).start()
+
+    def _auto_locate_thread(self):
+        # 1. WiFi scan
+        bssids = self.wifi_scanner.scan()
+        if bssids:
+            self._console_log(f"Found {len(bssids)} BSSIDs")
+            # 2. BeaconDB
+            lat, lon, acc, status = BeaconDBClient.geolocate(bssids)
+            if lat is not None:
+                self.after(0, lambda: self._update_coord_display(lat, lon, "BeaconDB", f"±{acc:.0f}m"))
+                self._console_log(f"BeaconDB success: {lat:.6f}, {lon:.6f}")
+                return
+            else:
+                self._console_log(f"BeaconDB failed: {status}")
+            # 3. Offline DB
+            loc = self.wifi_scanner.get_location_from_db(WIFI_DB_PATH)
+            if loc:
+                self.after(0, lambda: self._update_coord_display(loc[0], loc[1], "Offline DB"))
+                self._console_log("Offline DB success")
+                return
+        # 4. IP geolocation
+        ip_lat, ip_lon, desc = get_ip_location()
+        if ip_lat is not None:
+            self.after(0, lambda: self._update_coord_display(ip_lat, ip_lon, "IP Geolocation", desc))
+            self._console_log(f"IP geolocation: {desc}")
+        else:
+            self._console_log("All methods failed")
+            self.after(0, lambda: self._status_msg("Unable to locate"))
+
+    def _toggle_gps(self):
+        if not SERIAL_AVAILABLE:
+            self._status_msg("pyserial not installed")
+            return
+        # Use simple GPS reader (not persistent)
+        def gps_thread():
+            gps = GPSReader()
+            port = gps.find_gps_port()
+            if not port:
+                self.after(0, lambda: self._status_msg("No GPS device"))
+                return
+            self._console_log(f"GPS found on {port}")
+            def update(lat, lon, q):
+                self.after(0, lambda: self._update_coord_display(lat, lon, "GPS", f"fix={q}"))
+                gps.stop_reading()
+            gps.start_reading(update, baud=9600)
+        threading.Thread(target=gps_thread, daemon=True).start()
+
+    def _manual_coords(self):
+        popup = ctk.CTkToplevel(self)
+        popup.title("Manual Coordinates")
+        popup.geometry("300x200")
+        popup.configure(fg_color=COLORS["bg"])
+        popup.transient(self)
+        popup.grab_set()
+        ctk.CTkLabel(popup, text="Enter coordinates:", text_color=COLORS["text_primary"]).pack(pady=10)
+        e1 = ctk.CTkEntry(popup, placeholder_text="Latitude"); e1.pack(pady=5)
+        e2 = ctk.CTkEntry(popup, placeholder_text="Longitude"); e2.pack(pady=5)
+        def set_manual():
+            try:
+                lat = float(e1.get())
+                lon = float(e2.get())
+                if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+                    raise ValueError
+                self._update_coord_display(lat, lon, "Manual")
+                popup.destroy()
+            except:
+                self._status_msg("Invalid coordinates")
+        ctk.CTkButton(popup, text="Set", command=set_manual, fg_color=COLORS["accent"]).pack(pady=10)
+
+    def _calibrate_wifi_popup(self):
+        popup = ctk.CTkToplevel(self)
+        popup.title("Calibrate Wi‑Fi")
+        popup.geometry("350x220")
+        popup.configure(fg_color=COLORS["bg"])
+        popup.transient(self)
+        popup.grab_set()
+        ctk.CTkLabel(popup, text="Enter exact coordinates:", text_color=COLORS["text_primary"]).pack(pady=5)
+        e1 = ctk.CTkEntry(popup, placeholder_text="Latitude"); e1.pack(pady=5)
+        e1.insert(0, f"{self.latitude:.6f}" if self.latitude else "")
+        e2 = ctk.CTkEntry(popup, placeholder_text="Longitude"); e2.pack(pady=5)
+        e2.insert(0, f"{self.longitude:.6f}" if self.longitude else "")
+        def do_calibrate():
+            try:
+                lat = float(e1.get())
+                lon = float(e2.get())
+                if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+                    raise ValueError
+                popup.destroy()
+                threading.Thread(target=self._calibrate_wifi_thread, args=(lat, lon), daemon=True).start()
+            except:
+                self._status_msg("Invalid coordinates")
+        ctk.CTkButton(popup, text="Calibrate", command=do_calibrate, fg_color=COLORS["gold"]).pack(pady=10)
+
+    def _calibrate_wifi_thread(self, lat, lon):
+        # Delete old DB
+        if WIFI_DB_PATH.exists():
+            WIFI_DB_PATH.unlink()
+        scanner = WiFiScanner(log_func=self._console_log)
+        bssids = scanner.scan()
+        if not bssids:
+            self._console_log("No WiFi networks found for calibration")
+            return
+        with sqlite3.connect(str(WIFI_DB_PATH)) as conn:
+            conn.execute('CREATE TABLE IF NOT EXISTS access_points (bssid TEXT PRIMARY KEY, lat REAL, lon REAL, timestamp INTEGER)')
+            conn.executemany('INSERT OR REPLACE INTO access_points VALUES (?,?,?,?)',
+                             [(b, lat, lon, int(time.time())) for b in bssids])
+        self._console_log(f"Wi‑Fi database rebuilt with {len(bssids)} APs")
+        self.after(0, lambda: self._status_msg("Wi‑Fi calibrated"))
+
+    def _submit_beacondb(self):
+        if self.latitude is None:
+            self._status_msg("No coordinates")
+            return
+        bssids = self.wifi_scanner.scan()
+        if not bssids:
+            self._status_msg("No WiFi networks")
+            return
+        def cb(msg):
+            self._console_log(f"BeaconDB submit: {msg}")
+        threading.Thread(target=lambda: BeaconDBClient.submit(bssids, self.latitude, self.longitude, cb), daemon=True).start()
+
+    def _show_on_map(self):
+        if self.latitude is not None:
+            url = f"https://www.openstreetmap.org/?mlat={self.latitude}&mlon={self.longitude}#map=15/{self.latitude}/{self.longitude}"
+            webbrowser.open(url)
+
+    def _send_location_decl(self):
+        if self.latitude is None:
+            self._status_msg("Locate first")
+            return
+        try:
+            dec = declination(self.latitude, self.longitude, 0)
+            self._safe_command(lambda: self.controller.set_declination(dec))()
+            self._status_msg(f"Sent declination {dec:.2f}° to rotator")
+        except Exception as e:
+            self._status_msg(f"Error: {e}")
+
+    # ---------- Declination tab manual calc ----------
     def _calc_declination(self):
         try:
             lat = float(self.lat_entry.get())
@@ -996,39 +1350,33 @@ class Rotator7App(ctk.CTk):
                 raise ValueError
             dec = declination(lat, lon, 0)
             self.decl_result.configure(text=f"{dec:.2f}°")
-            self.config.set("last_lat", lat)
-            self.config.set("last_lon", lon)
-            self._status_msg(f"Declination: {dec:.2f}°")
-        except Exception:
-            self._status_msg("Invalid coordinates")
+        except:
+            pass
 
     def _send_decl_to_rotator(self):
         dec_str = self.decl_result.cget("text").replace("°", "")
         try:
             dec = float(dec_str)
             self._safe_command(lambda: self.controller.set_declination(dec))()
-        except ValueError:
+        except:
             self._status_msg("Calculate declination first")
 
     def _gps_get_coords(self):
-        # Quick GPS import (requires pynmea2 + serial)
+        # Small GPS for declination tab
         if not SERIAL_AVAILABLE:
             self._status_msg("pyserial not installed")
             return
         def gps_thread():
-            try:
-                gps_reader = GPSReader()
-                port = gps_reader.find_gps_port()
-                if not port:
-                    self.after(0, lambda: self._status_msg("No GPS device"))
-                    return
-                def update(lat, lon, q):
-                    self.after(0, lambda: self.lat_entry.delete(0, "end") or self.lat_entry.insert(0, f"{lat:.6f}"))
-                    self.after(0, lambda: self.lon_entry.delete(0, "end") or self.lon_entry.insert(0, f"{lon:.6f}"))
-                    gps_reader.stop_reading()
-                gps_reader.start_reading(update, baud=9600)
-            except Exception as e:
-                self.after(0, lambda: self._status_msg(f"GPS error: {e}"))
+            gps = GPSReader()
+            port = gps.find_gps_port()
+            if not port:
+                self.after(0, lambda: self._status_msg("No GPS device"))
+                return
+            def update(lat, lon, q):
+                self.after(0, lambda: self.lat_entry.delete(0, "end") or self.lat_entry.insert(0, f"{lat:.6f}"))
+                self.after(0, lambda: self.lon_entry.delete(0, "end") or self.lon_entry.insert(0, f"{lon:.6f}"))
+                gps.stop_reading()
+            gps.start_reading(update, baud=9600)
         threading.Thread(target=gps_thread, daemon=True).start()
 
     # ---------- Auto-reconnect ----------
@@ -1053,7 +1401,7 @@ class Rotator7App(ctk.CTk):
         self.config.save()
         self.destroy()
 
-# -------------------------- GPS Reader (simple, used for Declination tab) --------------------------
+# -------------------------- GPS Reader (simple) --------------------------
 if SERIAL_AVAILABLE:
     class GPSReader:
         def __init__(self):
@@ -1074,7 +1422,7 @@ if SERIAL_AVAILABLE:
                     continue
             return None
 
-        def start_reading(self, callback: Callable[[float, float, int], None], baud=9600):
+        def start_reading(self, callback, baud=9600):
             port = self.find_gps_port(baud)
             if not port:
                 return False
@@ -1091,7 +1439,7 @@ if SERIAL_AVAILABLE:
                         msg = pynmea2.parse(line)
                         if msg.latitude and msg.longitude:
                             callback(float(msg.latitude), float(msg.longitude), msg.gps_qual)
-                            break   # single fix
+                            break
                 except:
                     continue
 

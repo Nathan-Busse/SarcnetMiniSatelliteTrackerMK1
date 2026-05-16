@@ -1,17 +1,14 @@
 #!/usr/bin/env python3
 """
-Rotator7 Control Center v3.6 — Arduino Nano + GY‑511 + WiFi‑IP geolocation + Pop‑up Calibration Assistant
-=========================================================================================================
-Based on SARCnet Mini Satellite-Antenna Rotator Mk1 documentation:
-  https://www.sarcnet.org/mini-satellite-antenna-rotator-mk1.html
-  https://www.sarcnet.org/mini-satellite-antenna-rotator-mk1.html#CalibrationInstructions
-
+Rotator7 Control Center v5.2 — Arduino Nano + GY‑511 + WiFi‑IP geolocation + Voice‑Guided Calibration
+======================================================================================================
 Full‑featured interface:
-  - Real‑time data streaming with live plots
-  - **Pop‑up guided calibration assistant** (step‑by‑step walkthrough)
+  - Real‑time data streaming with live plots (always visible, 50/50 split with terminal)
+  - **Voice‑controlled calibration assistant** – speaks each step aloud, hands‑free
+  - Supports the 3D‑Printed Calibration Housing Ruler (sensor Y‑axis along boresight, X‑axis right)
   - Declination calculator (offline GeoDude)
   - Wi‑Fi scanning, BeaconDB, offline DB, IP geolocation, manual coords, GPS
-  - Custom command terminal with history and live data chart
+  - Custom command terminal with history and live data chart (50/50 split)
   - SPECIAL CALIBRATION CHART – shows offset convergence when 'c' is sent
   - Persistent configuration, appearance themes
 """
@@ -60,8 +57,21 @@ try:
 except ImportError:
     MPL_AVAILABLE = False
 
+# -------------------------- Speech & TTS (optional but highly recommended) --------------------------
+try:
+    import speech_recognition as sr
+    STT_AVAILABLE = True
+except ImportError:
+    STT_AVAILABLE = False
+
+try:
+    import pyttsx3
+    TTS_AVAILABLE = True
+except ImportError:
+    TTS_AVAILABLE = False
+
 # -------------------------- Constants --------------------------
-APP_TITLE = "Rotator7 Control Center v3.6"
+APP_TITLE = "Rotator7 Control Center v5.2"
 DEFAULT_BAUD = 115200
 CONFIG_PATH = BASE_DIR / "rotator_config.json"
 LOG_DIR = BASE_DIR / "logs"
@@ -231,10 +241,7 @@ class WiFiScanner:
         self.raw_output = ""
         try:
             if self.platform == "Windows":
-                cmds = [
-                    ['netsh', 'wlan', 'show', 'networks', 'mode=bssid'],
-                    ['netsh', 'wlan', 'show', 'networks', 'mode=bssid', 'format=list']
-                ]
+                cmds = [['netsh', 'wlan', 'show', 'networks', 'mode=bssid']]
                 for cmd in cmds:
                     res = self._try_command(cmd)
                     if res:
@@ -243,7 +250,6 @@ class WiFiScanner:
                 if not self.raw_output:
                     self.log("netsh failed")
                     return []
-
             elif self.platform == "Linux":
                 cmds = [['sudo', 'iwlist', 'scan'], ['iwlist', 'scan']]
                 for cmd in cmds:
@@ -254,12 +260,8 @@ class WiFiScanner:
                 if not self.raw_output:
                     self.log("iwlist failed")
                     return []
-
             elif self.platform == "Darwin":
-                cmds = [
-                    ['airport', '-s'],
-                    ['/System/Library/PrivateFrameworks/Apple80211.framework/Versions/Current/Resources/airport', '-s']
-                ]
+                cmds = [['airport', '-s']]
                 for cmd in cmds:
                     res = self._try_command(cmd)
                     if res:
@@ -268,11 +270,9 @@ class WiFiScanner:
                 if not self.raw_output:
                     self.log("airport failed")
                     return []
-
         except Exception as e:
             self.log(f"Scan error: {e}")
             return []
-
         if self.raw_output:
             self.log(f"Raw scan captured ({len(self.raw_output)} chars)")
         return self._extract_bssids()
@@ -335,7 +335,7 @@ class BeaconDBClient:
             "wifiAccessPoints": [{"macAddress": b, "signalStrength": -70} for b in bssids[:10]],
             "considerIp": False
         }
-        headers = {"User-Agent": "Rotator7ControlCenter/3.6"}
+        headers = {"User-Agent": "Rotator7ControlCenter/5.2"}
         try:
             r = requests.post(url, json=payload, headers=headers, timeout=5)
             if r.status_code == 200:
@@ -361,7 +361,7 @@ class BeaconDBClient:
                 "wifiAccessPoints": [{"macAddress": b, "signalStrength": -70, "channel": 0, "frequency": 0} for b in bssids]
             }]
         }
-        headers = {"User-Agent": "Rotator7ControlCenter/3.6", "Content-Type": "application/json"}
+        headers = {"User-Agent": "Rotator7ControlCenter/5.2", "Content-Type": "application/json"}
         try:
             r = requests.post(url, json=payload, headers=headers, timeout=10)
             if r.status_code == 200:
@@ -432,7 +432,6 @@ if SERIAL_AVAILABLE:
                 self.ser.flush()
             logger.debug(f"Sent: {cmd}")
 
-        # Predefined commands as per SARCnet documentation
         def send_help(self):              self.send_raw("h")
         def set_declination(self, dec):   self.send_raw(f"e{dec:.2f}")
         def start_calibration(self):      self.send_raw("c"); self._notify_status("Calibration started")
@@ -477,7 +476,6 @@ if SERIAL_AVAILABLE:
             if self.on_raw_line:
                 self.on_raw_line(line)
             parts = line.split(",")
-            # Debug mode: 6 floats (mx,my,mz,gx,gy,gz)
             if len(parts) == 6:
                 try:
                     vals = [float(p) for p in parts]
@@ -486,7 +484,6 @@ if SERIAL_AVAILABLE:
                     return
                 except ValueError:
                     pass
-            # Monitor mode: 8 fields (az,el,azSet,elSet,azWindup,azError,elError,windupFlag)
             if len(parts) == 8:
                 try:
                     d = {
@@ -500,7 +497,6 @@ if SERIAL_AVAILABLE:
                     return
                 except ValueError:
                     pass
-            # Calibration mode: 13 fields (sample_idx, meanX,Y,Z, minX,Y,Z, maxX,Y,Z, offsetX,Y,Z)
             if len(parts) == 13:
                 try:
                     numbers = [float(p) for p in parts]
@@ -598,7 +594,7 @@ else:
         def set_title(self, title): pass
         def set_ylabel(self, ylabel): pass
 
-# -------------------------- Macros (kept for compatibility) --------------------------
+# -------------------------- Macros --------------------------
 class MacroManager:
     def __init__(self, macro_dir=MACRO_DIR):
         self.macro_dir = macro_dir
@@ -624,138 +620,239 @@ class MacroManager:
         if path.exists():
             path.unlink()
 
-# -------------------------- Calibration Assistant (SARCnet Rotator7 Protocol) --------------------------
+# -------------------------- Calibration Assistant Backend --------------------------
 class CalibrationAssistant:
     """
-    Guided calibration walkthrough for the Rotator7 firmware.
-    Based on SARCnet Mini Satellite-Antenna Rotator Mk1 documentation.
+    Backend logic for guided calibration.
+    Based on the SARCnet Mini Satellite-Antenna Rotator Mk1 documentation:
+      https://www.sarcnet.org/mini-satellite-antenna-rotator-mk1.html
+
+    The sensor is installed into its 3D Printed calibration Housing Ruler with its Y-axis pointing
+    along the antenna boresight and its X-axis horizontally to the right.
+    The LSM303 magnetometer axes are oriented: X points North, Y points East, Z points up.
+
+    The 'c' command starts automated calibration on the Arduino. The user rotates
+    the sensor through 6 orientations while the firmware collects magnetometer data.
+    The beeper provides audio feedback. When complete, 's' saves to EEPROM.
     """
     def __init__(self, controller: Rotator7Controller, log_func: Callable[[str], None],
-                 popup_update: Callable[[str, int], None] = None):
+                 voice_callback: Callable[[str], None] = None):
         self.controller = controller
         self.log_func = log_func
-        self.popup_update = popup_update
+        self.voice_callback = voice_callback
         self.active = False
-        # Sensor orientations for LSM303D calibration
         self.steps = [
-            "Place sensor flat with Z-axis pointing UP (level surface)",
-            "Rotate sensor 90° so Z-axis points to the LEFT (on its side)",
-            "Rotate sensor 90° so Z-axis points to the RIGHT (other side)",
-            "Tilt sensor so Z-axis points FORWARD (pitch down 90°)",
-            "Tilt sensor so Z-axis points BACKWARD (pitch up 90°)",
-            "Flip sensor so Z-axis points DOWN (upside down)"
+            "flat with Z‑axis pointing straight UP",
+            "on its LEFT side so Z‑axis points to the LEFT",
+            "on its RIGHT side so Z‑axis points to the RIGHT",
+            "pitched FORWARD 90° so Z‑axis points FORWARD",
+            "pitched BACKWARD 90° so Z‑axis points BACKWARD",
+            "flipped UPSIDE DOWN so Z‑axis points DOWN"
         ]
         self.current_step = 0
 
     def start(self):
         self.active = True
         self.current_step = 0
-        self.log_func("=" * 50)
         self.log_func("CALIBRATION ASSISTANT STARTED")
-        self.log_func("The Arduino beeper will sound during calibration.")
-        self.log_func("Rotate the sensor SLOWLY through each orientation.")
-        self.log_func("=" * 50)
-        self.controller.start_calibration()   # sends 'c'
+        self.controller.start_calibration()
         self._next_step()
 
     def _next_step(self):
         if self.current_step < len(self.steps):
-            step_num = self.current_step + 1
-            total = len(self.steps)
             instruction = self.steps[self.current_step]
-            self.log_func(f"\n{'─' * 40}")
-            self.log_func(f"STEP {step_num}/{total}: {instruction}")
-            self.log_func(f"{'─' * 40}")
-            self.log_func("→ Press 'Capture' when the sensor is in position.")
-            self.log_func("→ Hold the sensor STEADY during data collection.")
-            if self.popup_update:
-                self.popup_update(f"Step {step_num}/{total}: {instruction}", self.current_step)
+            self.log_func(f"Step {self.current_step+1}/{len(self.steps)}: {instruction}")
+            if self.voice_callback:
+                self.voice_callback(f"STEP_{self.current_step}")
         else:
-            self.log_func("\n" + "=" * 50)
-            self.log_func("ALL ORIENTATIONS CAPTURED")
-            self.log_func("Saving calibration data to EEPROM...")
+            self.log_func("Calibration complete. Saving to EEPROM...")
             self.controller.save_eeprom()
             self.active = False
-            self.log_func("CALIBRATION COMPLETE – EEPROM saved.")
-            self.log_func("=" * 50)
-            if self.popup_update:
-                self.popup_update("✓ Calibration complete! EEPROM saved.", -1)
+            self.log_func("EEPROM saved.")
+            if self.voice_callback:
+                self.voice_callback("CALIBRATION_COMPLETE")
 
     def capture_step(self):
         if not self.active:
             return
-        self.log_func(f"→ Capturing orientation {self.current_step + 1}...")
         self.controller.send_raw(f"T{self.current_step}")
         self.current_step += 1
-        time.sleep(0.3)   # allow Arduino to process
+        time.sleep(0.3)
         self._next_step()
 
     def abort(self):
         self.active = False
         self.controller.abort()
-        self.log_func("\nCALIBRATION ABORTED")
-        if self.popup_update:
-            self.popup_update("Calibration aborted.", -2)
+        self.log_func("Calibration aborted.")
+        if self.voice_callback:
+            self.voice_callback("CALIBRATION_ABORTED")
 
-# -------------------------- Calibration Assistant Popup --------------------------
-class CalibrationAssistantPopup(ctk.CTkToplevel):
-    def __init__(self, master, assistant: CalibrationAssistant):
-        super().__init__(master)
-        self.title("Calibration Assistant")
-        self.geometry("500x300")
-        self.configure(fg_color=COLORS["bg"])
-        self.transient(master)
-        self.grab_set()
+# -------------------------- Voice Calibration Assistant (Hands‑Free, Speaks Each Step Aloud) --------------------------
+class VoiceCalibrationAssistant:
+    """
+    Runs the calibration assistant using speech recognition and text‑to‑speech.
+    Speaks every instruction aloud – no need to look at the screen.
+    Listens for: "ready", "capture", "abort", "repeat".
+    """
+    def __init__(self, app, assistant: CalibrationAssistant):
+        self.app = app
         self.assistant = assistant
-        self.assistant.popup_update = self._update_instruction
+        self.running = False
+        self.tts_engine = None
+        self.recognizer = None
+        self._init_engines()
+        self.assistant.voice_callback = self._handle_step
 
-        self.instruction_label = ctk.CTkLabel(self, text="Starting...", font=("Arial", 14),
-                                             text_color=COLORS["text_primary"], wraplength=450)
-        self.instruction_label.pack(pady=20, padx=20)
+    def _init_engines(self):
+        if TTS_AVAILABLE:
+            try:
+                self.tts_engine = pyttsx3.init()
+                self.tts_engine.setProperty('rate', 155)
+            except Exception as e:
+                self.app._status_msg(f"TTS init failed: {e}")
+                self.tts_engine = None
+        else:
+            self.app._status_msg("pyttsx3 not installed – no voice output.")
+        if STT_AVAILABLE:
+            self.recognizer = sr.Recognizer()
+        else:
+            self.app._status_msg("speech_recognition not installed – no voice input.")
 
-        self.progress = ctk.CTkProgressBar(self)
-        self.progress.set(0)
-        self.progress.pack(fill="x", padx=20, pady=10)
+    def speak(self, message: str):
+        """Say a message via TTS, and also log it to the terminal."""
+        self.app._append_terminal(f"[VOICE] {message}")
+        if self.tts_engine:
+            self.tts_engine.say(message)
+            self.tts_engine.runAndWait()
 
-        btn_frame = ctk.CTkFrame(self, fg_color="transparent")
-        btn_frame.pack(pady=10)
-        self.capture_btn = ctk.CTkButton(btn_frame, text="Capture Step", command=self._capture,
-                                         fg_color=COLORS["gold"], text_color="black")
-        self.capture_btn.pack(side="left", padx=5)
-        self.abort_btn = ctk.CTkButton(btn_frame, text="Abort", command=self._abort,
-                                       fg_color=COLORS["danger"])
-        self.abort_btn.pack(side="left", padx=5)
+    def _handle_step(self, step_id: str):
+        """Called by the backend to speak detailed movement guidance for each step."""
+        if step_id == "CALIBRATION_COMPLETE":
+            self.speak("Calibration is now complete. The data has been saved to EEPROM. You may now disconnect the device and position it as needed. Great work!")
+            self.running = False
+            return
+        if step_id == "CALIBRATION_ABORTED":
+            self.speak("Calibration has been aborted. You may close this assistant.")
+            self.running = False
+            return
 
-        self.protocol("WM_DELETE_WINDOW", self._abort)
+        step_num = int(step_id.split("_")[1])
+        total = len(self.assistant.steps)
 
-        # Start the assistant
+        detailed_guidance = [
+            (
+                f"Step 1 of {total}. "
+                "Hold the sensor in the calibration ruler flat and level. The circuit board should be horizontal, like it's resting on a table. "
+                "The Z axis is pointing straight up toward the sky. "
+                "The X axis should point toward magnetic north. "
+                "Keep the sensor perfectly still. You will hear a beep from the Arduino when it begins sampling. "
+                "When you are ready, say 'ready' or 'capture'."
+            ),
+            (
+                f"Step 2 of {total}. "
+                "Rotate the entire ruler 90 degrees to the LEFT side. "
+                "The circuit board should now be vertical, standing on its left edge. "
+                "The Z axis now points horizontally to your LEFT. "
+                "The X axis still points toward magnetic north. "
+                "Hold the sensor steady in this orientation. "
+                "When you are ready, say 'ready' or 'capture'."
+            ),
+            (
+                f"Step 3 of {total}. "
+                "Now rotate the ruler 90 degrees to the RIGHT side. "
+                "The circuit board should be vertical, standing on its right edge. "
+                "The Z axis now points horizontally to your RIGHT. "
+                "Keep the X axis pointing toward magnetic north. "
+                "Hold the sensor steady. "
+                "When you are ready, say 'ready' or 'capture'."
+            ),
+            (
+                f"Step 4 of {total}. "
+                "Now tilt the ruler FORWARD by 90 degrees. "
+                "The Z axis, which was pointing up, now points straight FORWARD, away from you. "
+                "The circuit board is vertical, with the top edge facing forward. "
+                "Keep the X axis pointing toward magnetic north. "
+                "Hold it steady. "
+                "When you are ready, say 'ready' or 'capture'."
+            ),
+            (
+                f"Step 5 of {total}. "
+                "Now tilt the ruler BACKWARD by 90 degrees. "
+                "The Z axis now points straight BACKWARD, toward you. "
+                "The circuit board is vertical, with the top edge facing toward you. "
+                "Keep the X axis pointing toward magnetic north. "
+                "Hold it steady. "
+                "When you are ready, say 'ready' or 'capture'."
+            ),
+            (
+                f"Step 6 of {total}. "
+                "Now flip the ruler completely UPSIDE DOWN. "
+                "The circuit board should be horizontal, but flipped over. "
+                "The Z axis now points straight DOWN toward the ground. "
+                "The X axis still points toward magnetic north. "
+                "Hold it steady. "
+                "When you are ready, say 'ready' or 'capture'."
+            ),
+        ]
+
+        self.speak(detailed_guidance[step_num])
+
+    def listen_for_command(self, timeout=15) -> Optional[str]:
+        if not self.recognizer:
+            return None
+        try:
+            with sr.Microphone() as source:
+                self.recognizer.adjust_for_ambient_noise(source, duration=0.5)
+                audio = self.recognizer.listen(source, timeout=timeout)
+            text = self.recognizer.recognize_google(audio).lower()
+            self.app._append_terminal(f"[HEARD] {text}")
+            return text
+        except sr.UnknownValueError:
+            self.app._append_terminal("[VOICE] Could not understand – please repeat.")
+            return None
+        except sr.RequestError:
+            self.app._append_terminal("[VOICE] Speech service unavailable.")
+            return None
+        except Exception:
+            return None
+
+    def run(self):
+        """Start the voice‑guided calibration in a background thread."""
+        self.running = True
+        self.speak(
+            "Welcome to the hands‑free calibration assistant for the SARCNET Mini Satellite Antenna Rotator. "
+            "I will guide you through all six sensor orientations needed to calibrate the magnetometer. "
+            "Make sure the sensor is inside the 3D‑printed calibration housing ruler. "
+            "Face magnetic north and hold the ruler so the X axis points forward. "
+            "The Y axis runs along the boom, and the Z axis starts pointing up. "
+            "You will hear a beep from the Arduino when it begins sampling. "
+            "Say 'abort' at any time to stop. Let's begin."
+        )
         self.assistant.start()
 
-    def _update_instruction(self, message: str, step_index: int):
-        self.instruction_label.configure(text=message)
-        if step_index >= 0 and step_index < len(self.assistant.steps):
-            self.progress.set((step_index) / len(self.assistant.steps))
-            self.capture_btn.configure(state="normal")
-        elif step_index == -1:  # completed
-            self.progress.set(1.0)
-            self.capture_btn.configure(state="disabled")
-            self.abort_btn.configure(text="Close")
-        elif step_index == -2:  # aborted
-            self.capture_btn.configure(state="disabled")
-            self.abort_btn.configure(text="Close")
-            self.progress.set(0)
-
-    def _capture(self):
-        if self.assistant.active:
-            self.assistant.capture_step()
-
-    def _abort(self):
-        self.assistant.abort()
-        self.destroy()
-
-    def destroy(self):
-        self.assistant.active = False
-        super().destroy()
+        while self.running and self.assistant.active:
+            cmd = self.listen_for_command(timeout=20)
+            if cmd is None:
+                self.speak("I didn't hear you. Let me repeat the current instruction.")
+                self.assistant._next_step()
+                continue
+            if "abort" in cmd:
+                self.speak("Aborting calibration as requested.")
+                self.assistant.abort()
+                self.running = False
+                break
+            elif "ready" in cmd or "capture" in cmd or "ok" in cmd or "done" in cmd:
+                self.speak("Capturing this orientation. Keep the sensor steady...")
+                self.assistant.capture_step()
+                if not self.assistant.active:
+                    self.running = False
+                    break
+            elif "repeat" in cmd or "again" in cmd:
+                self.speak("Let me repeat the instruction for the current step.")
+                self.assistant._next_step()
+            else:
+                self.speak("I didn't catch that. Say 'ready' when you've positioned the sensor, 'repeat' to hear the instruction again, or 'abort' to stop.")
+        self.speak("Voice assistant stopped.")
 
 # -------------------------- GUI Application --------------------------
 class Rotator7App(ctk.CTk):
@@ -790,6 +887,7 @@ class Rotator7App(ctk.CTk):
             self.controller.on_status = self._on_status
 
         self.calib_assistant = None
+        self.voice_assistant = None
 
         self._create_layout()
         self._setup_bindings()
@@ -854,6 +952,7 @@ class Rotator7App(ctk.CTk):
         self.status_label = ctk.CTkLabel(status_frame, text="Ready", text_color=COLORS["text_secondary"])
         self.status_label.pack(side="left", padx=10)
 
+    # ---------- Terminal Tab (50/50 split) ----------
     def _build_terminal_tab(self):
         frame = ctk.CTkFrame(self.tab_terminal, fg_color="transparent")
         frame.pack(fill="both", expand=True, padx=10, pady=5)
@@ -861,6 +960,7 @@ class Rotator7App(ctk.CTk):
         split_frame = ctk.CTkFrame(frame, fg_color="transparent")
         split_frame.pack(fill="both", expand=True)
 
+        # Left pane – console (50% width)
         left_frame = ctk.CTkFrame(split_frame, fg_color="transparent")
         left_frame.pack(side="left", fill="both", expand=True, padx=(0,5))
 
@@ -868,9 +968,9 @@ class Rotator7App(ctk.CTk):
                                               text_color="#c9d1d9", border_width=0, corner_radius=8)
         self.terminal_output.pack(fill="both", expand=True, pady=(0,5))
 
-        right_frame = ctk.CTkFrame(split_frame, fg_color="transparent", width=350)
-        right_frame.pack(side="left", fill="both", expand=False)
-        right_frame.pack_propagate(False)
+        # Right pane – live plot (50% width)
+        right_frame = ctk.CTkFrame(split_frame, fg_color="transparent")
+        right_frame.pack(side="left", fill="both", expand=True, padx=(5,0))
 
         self.terminal_plot = LivePlotFrame(right_frame, title="Live Data (from Terminal)", ylabel="Values")
         self.terminal_plot.pack(fill="both", expand=True, pady=(0,2))
@@ -888,17 +988,19 @@ class Rotator7App(ctk.CTk):
                       border_color=COLORS["danger"], text_color=COLORS["danger"],
                       font=("Arial", 10)).pack(side="left", padx=2)
 
+        # Launch assistant button
         launch_frame = ctk.CTkFrame(frame, fg_color=COLORS["card_bg"], corner_radius=8, border_width=1,
                                     border_color=COLORS["card_border"])
         launch_frame.pack(fill="x", pady=5)
 
-        ctk.CTkLabel(launch_frame, text="Guided Calibration", font=("Arial", 13, "bold"),
+        ctk.CTkLabel(launch_frame, text="Voice Calibration Assistant", font=("Arial", 13, "bold"),
                      text_color=COLORS["text_primary"]).pack(side="left", padx=10, pady=5)
-        self.btn_launch_assistant = ctk.CTkButton(launch_frame, text="Launch Assistant",
-                                                  command=self._launch_calib_popup,
-                                                  fg_color=COLORS["accent"])
-        self.btn_launch_assistant.pack(side="left", padx=10, pady=5)
+        self.btn_voice = ctk.CTkButton(launch_frame, text="Start Voice Assistant",
+                                       command=self._start_voice_calib,
+                                       fg_color=COLORS["secondary"])
+        self.btn_voice.pack(side="left", padx=10, pady=5)
 
+        # Input frame (below split)
         input_frame = ctk.CTkFrame(frame, fg_color="transparent")
         input_frame.pack(fill="x", pady=(5,0))
         self.cmd_entry = ctk.CTkEntry(input_frame, font=("Consolas", 12), placeholder_text="Type command...")
@@ -916,25 +1018,31 @@ class Rotator7App(ctk.CTk):
         self.terminal_calib_plot.pack_forget()
 
     def _clear_terminal_plot(self):
-        if self.calibration_active:
+        if self.calibration_active and self.terminal_calib_plot.winfo_ismapped():
             self.terminal_calib_plot.clear()
-        else:
+        elif self.terminal_plot.winfo_ismapped():
             self.terminal_plot.clear()
 
     def _append_terminal(self, msg):
         self.terminal_output.insert("end", msg + "\n")
         self.terminal_output.see("end")
 
-    def _launch_calib_popup(self):
+    def _start_voice_calib(self):
         if not self.controller or not self.controller.is_connected:
             self._status_msg("Connect to the device first.")
             return
+        if not STT_AVAILABLE and not TTS_AVAILABLE:
+            self._status_msg("Speech libraries missing. Please install 'speech_recognition' and 'pyttsx3'.")
+            return
+        self.btn_voice.configure(state="disabled", text="Voice Assistant Running...")
         self.calib_assistant = CalibrationAssistant(
             self.controller,
             log_func=lambda msg: self.after(0, lambda: self._append_terminal(msg))
         )
-        CalibrationAssistantPopup(self, self.calib_assistant)
+        self.voice_assistant = VoiceCalibrationAssistant(self, self.calib_assistant)
+        threading.Thread(target=self.voice_assistant.run, daemon=True).start()
 
+    # ---------- Location / Declination / other methods (unchanged) ----------
     def _build_location_tab(self):
         frame = ctk.CTkFrame(self.tab_location, fg_color="transparent")
         frame.pack(fill="both", expand=True, padx=10, pady=5)
@@ -1030,9 +1138,9 @@ class Rotator7App(ctk.CTk):
         self.bind("<Control-r>", lambda e: self._safe_command(self.controller.reset)())
 
     def _plot_update_loop(self):
-        if hasattr(self, 'terminal_plot') and not self.calibration_active:
+        if hasattr(self, 'terminal_plot') and self.terminal_plot.winfo_ismapped():
             self.terminal_plot.refresh()
-        if hasattr(self, 'terminal_calib_plot') and self.calibration_active:
+        if hasattr(self, 'terminal_calib_plot') and self.terminal_calib_plot.winfo_ismapped():
             self.terminal_calib_plot.refresh()
         self.after(100, self._plot_update_loop)
 
@@ -1043,8 +1151,7 @@ class Rotator7App(ctk.CTk):
     def _on_raw_line(self, line):
         self.after(0, lambda: self.terminal_output.insert("end", line + "\n"))
         self.after(0, lambda: self.terminal_output.see("end"))
-        if not self.calibration_active:
-            self._update_terminal_plot(line)
+        self._update_terminal_plot(line)
         if self.logging_active:
             self.log_data.log(line)
 
@@ -1072,7 +1179,7 @@ class Rotator7App(ctk.CTk):
     def _on_calibration(self, data):
         if self.logging_active and self.log_data.mode == "calibration":
             self.log_data.log(*data)
-        if self.calibration_active and hasattr(self, 'terminal_calib_plot'):
+        if hasattr(self, 'terminal_calib_plot') and self.terminal_calib_plot.winfo_ismapped():
             if len(data) >= 13:
                 offsetX, offsetY, offsetZ = data[10], data[11], data[12]
                 self.after(0, lambda: self.terminal_calib_plot.add_data("offX", offsetX))

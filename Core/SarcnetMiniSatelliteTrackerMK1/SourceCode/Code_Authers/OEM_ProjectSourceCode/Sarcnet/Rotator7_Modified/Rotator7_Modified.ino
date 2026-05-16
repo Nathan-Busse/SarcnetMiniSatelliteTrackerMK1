@@ -1,3 +1,34 @@
+/*
+
+SARCTRAC 3D Sensor Calibration Guide
+This guide provides the full procedure to calibrate the SARCTRAC sensor to Earth's magnetic and gravitational fields without needing to refer back to the video.
+
+1. Preparation & Setup
+Tools Needed: A plastic ruler. Taping the sensor to the center of a ruler provides a stable handle and significantly reduces the risk of accidental bumps.
+Environmental Requirements: Perform the calibration away from magnetic interference (e.g., steel structures). If you move the sensor near such objects later, you must recalibrate.
+Starting Point: Access the SARCTRAC selection page and face magnetic north.
+2. Initialization & Rough Calibration
+Press the Begin button in the software.
+Rough Calibration (2:27): Before moving to the specific points, perform a baseline calibration by slowly rotating the sensor in two horizontal axes:
+Yaw (Z-axis): Rotate it like a compass needle on a flat surface.
+Pitch/Roll (Horizontal axes): Tilt or rock the sensor side-to-side and front-to-back while maintaining a generally horizontal orientation.
+3. The 12-Point Calibration Routine
+For each of the six sides of the sensor (Front, Top, Rear, Left, Right, Bottom), you must complete two specific orientations. The device will beep while collecting data; move the sensor gently around the target point until the beeping stops (1:53).
+
+Front Side: (1) Vertical (3:32); (2) North at local magnetic inclination (3:55).
+Top Side: (3) Vertical (4:22); (4) North at local magnetic inclination (4:44).
+Rear Side: (5) Vertical (5:02); (6) North at local magnetic inclination (5:22).
+Left Side: (7) Vertical (5:39); (8) North at local magnetic inclination (6:05).
+Right Side: (9) Vertical (6:22); (10) North at local magnetic inclination (6:47).
+Bottom Side: (11) Vertical (7:13); (12) North at local magnetic inclination (7:42).
+4. Troubleshooting & Saving
+Important Rule: If you bump or drop the sensor during the process, you must press the Abort button and start the entire sequence over to ensure accuracy (2:09).
+Saving: Once all 12 points are successfully collected, press the Save button (8:11). The system will now use these settings every time it powers up (8:15).
+
+*/
+
+
+
 //Rotator7.ino - Mini Satellite-Antenna Rotator.
 //Copyright (c) 2015-2025 Julie VK3FOWL and Joe VK3YSP
 //Released under the GNU General Public License.

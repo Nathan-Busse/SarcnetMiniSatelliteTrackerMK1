@@ -186,3 +186,121 @@
 2026-05-16 19:16:06,656 - DEBUG - Sent: r
 2026-05-16 19:16:14,770 - DEBUG - Sent: m
 2026-05-16 19:18:27,565 - INFO - Disconnected
+2026-05-16 19:20:04,187 - INFO - Connected to COM5 @ 9600
+2026-05-16 19:20:07,128 - DEBUG - Sent: c
+2026-05-16 19:20:47,291 - DEBUG - Sent: T0
+2026-05-16 19:25:18,289 - DEBUG - Sent: a
+2026-05-16 19:25:20,344 - DEBUG - Sent: a
+2026-05-16 19:25:24,496 - DEBUG - Sent: a
+2026-05-16 19:25:25,679 - DEBUG - Sent: a
+2026-05-16 19:25:26,004 - DEBUG - Sent: a
+2026-05-16 19:25:26,540 - DEBUG - Sent: a
+2026-05-16 19:25:26,823 - DEBUG - Sent: a
+2026-05-16 19:25:26,852 - DEBUG - Sent: a
+2026-05-16 19:25:27,453 - DEBUG - Sent: a
+2026-05-16 19:25:30,238 - DEBUG - Sent: a
+2026-05-16 19:25:30,581 - DEBUG - Sent: a
+2026-05-16 19:25:33,709 - DEBUG - Sent: a
+2026-05-16 19:25:34,385 - DEBUG - Sent: a
+2026-05-16 19:25:34,576 - DEBUG - Sent: a
+2026-05-16 19:25:34,924 - DEBUG - Sent: a
+2026-05-16 19:25:34,956 - DEBUG - Sent: a
+2026-05-16 19:25:35,299 - DEBUG - Sent: a
+2026-05-16 19:25:35,333 - DEBUG - Sent: a
+2026-05-16 19:25:35,362 - DEBUG - Sent: a
+2026-05-16 19:25:35,568 - DEBUG - Sent: a
+2026-05-16 19:25:35,956 - DEBUG - Sent: a
+2026-05-16 19:25:35,989 - DEBUG - Sent: a
+2026-05-16 19:25:36,018 - DEBUG - Sent: a
+2026-05-16 19:25:36,217 - DEBUG - Sent: a
+2026-05-16 19:25:46,091 - DEBUG - Sent: a
+2026-05-16 19:25:47,098 - DEBUG - Sent: a
+2026-05-16 19:25:47,403 - DEBUG - Sent: a
+2026-05-16 19:25:47,734 - DEBUG - Sent: a
+2026-05-16 19:25:48,087 - DEBUG - Sent: a
+2026-05-16 19:25:49,542 - DEBUG - Sent: a
+2026-05-16 19:25:50,355 - DEBUG - Sent: a
+2026-05-16 19:25:50,635 - DEBUG - Sent: a
+2026-05-16 19:25:50,664 - DEBUG - Sent: a
+2026-05-16 19:25:51,022 - DEBUG - Sent: a
+2026-05-16 19:25:51,056 - DEBUG - Sent: a
+2026-05-16 19:46:20,101 - INFO - Connected to COM5 @ 9600
+2026-05-16 19:46:36,914 - DEBUG - Sent: c
+2026-05-16 19:47:25,351 - INFO - Disconnected
+2026-05-16 19:51:47,158 - INFO - Connected to COM5 @ 9600
+2026-05-16 19:52:01,986 - DEBUG - Sent: c
+2026-05-16 19:53:04,694 - INFO - Disconnected
+2026-05-16 20:05:03,558 - INFO - Connected to COM5 @ 9600
+2026-05-16 20:05:38,882 - DEBUG - Sent: c
+2026-05-16 20:06:39,236 - DEBUG - Sent: a
+2026-05-16 20:10:37,596 - INFO - Connected to COM5 @ 9600
+2026-05-16 20:11:07,458 - INFO - Disconnected
+2026-05-16 20:14:19,603 - INFO - Connected to COM5 @ 9600
+2026-05-16 20:14:30,908 - INFO - Disconnected
+2026-05-16 20:20:47,799 - INFO - Connected to COM5 @ 9600
+2026-05-16 20:20:59,950 - INFO - Disconnected
+2026-05-16 20:22:42,117 - INFO - Connected to COM5 @ 9600
+2026-05-16 20:23:03,829 - INFO - Disconnected
+2026-05-16 20:33:49,958 - INFO - Connected to COM5 @ 9600
+2026-05-16 20:34:48,191 - INFO - Disconnected
+2026-05-16 20:35:19,262 - INFO - Connected to COM5 @ 9600
+2026-05-16 20:36:04,400 - DEBUG - Sent: c
+2026-05-16 20:37:33,496 - DEBUG - Sent: T0
+2026-05-16 20:40:14,415 - INFO - Disconnected
+2026-05-16 20:50:15,955 - INFO - Connected to COM5 @ 9600
+2026-05-16 20:51:04,627 - DEBUG - Sent: c
+2026-05-16 20:53:24,148 - DEBUG - Sent: T0
+2026-05-16 20:56:34,134 - DEBUG - Sent: T1
+2026-05-16 20:57:50,620 - DEBUG - Sent: T2
+2026-05-16 20:58:37,514 - DEBUG - Sent: T3
+2026-05-16 20:59:50,079 - DEBUG - Sent: T4
+2026-05-16 21:00:47,368 - DEBUG - Sent: T5
+2026-05-16 21:00:47,671 - DEBUG - Sent: s
+2026-05-16 21:01:19,046 - DEBUG - Sent: s
+2026-05-16 21:01:21,295 - DEBUG - Sent: r
+2026-05-16 21:01:26,543 - DEBUG - Sent: m
+2026-05-16 21:04:29,225 - DEBUG - Sent: m
+2026-05-16 21:05:17,074 - DEBUG - Sent: a
+2026-05-16 21:05:20,987 - DEBUG - Sent: a
+2026-05-16 21:07:37,248 - INFO - Disconnected
+2026-05-16 21:09:51,188 - INFO - Connected to COM5 @ 9600
+2026-05-16 21:10:00,129 - DEBUG - Sent: e-28.33
+2026-05-16 21:10:06,433 - DEBUG - Sent: s
+2026-05-16 21:10:14,097 - DEBUG - Sent: c
+2026-05-16 21:23:27,526 - DEBUG - Sent: s
+2026-05-16 21:23:34,607 - DEBUG - Sent: r
+2026-05-16 21:23:42,648 - DEBUG - Sent: m
+2026-05-16 21:25:03,781 - DEBUG - Sent: a
+2026-05-16 21:25:16,901 - INFO - Disconnected
+2026-05-16 21:30:20,292 - INFO - Connected to COM5 @ 9600
+2026-05-16 21:30:48,735 - DEBUG - Sent: e-20.73
+2026-05-16 21:30:53,144 - DEBUG - Sent: s
+2026-05-16 21:31:09,980 - DEBUG - Sent: r
+2026-05-16 21:31:14,776 - DEBUG - Sent: c
+2026-05-16 21:37:11,530 - DEBUG - Sent: s
+2026-05-16 21:37:17,153 - DEBUG - Sent: r
+2026-05-16 21:37:31,203 - DEBUG - Sent: m
+2026-05-16 21:38:25,878 - DEBUG - Sent: a
+2026-05-16 21:38:52,394 - INFO - Disconnected
+2026-05-16 21:38:52,590 - WARNING - Serial connection lost
+2026-05-16 21:40:20,517 - INFO - Connected to COM5 @ 9600
+2026-05-16 21:40:32,297 - DEBUG - Sent: e-20.37
+2026-05-16 21:40:38,310 - DEBUG - Sent: s
+2026-05-16 21:41:01,749 - DEBUG - Sent: e-20.73
+2026-05-16 21:41:03,819 - DEBUG - Sent: s
+2026-05-16 21:41:26,660 - DEBUG - Sent: c
+2026-05-16 21:48:33,996 - DEBUG - Sent: s
+2026-05-16 21:48:37,392 - DEBUG - Sent: r
+2026-05-16 21:48:41,231 - DEBUG - Sent: m
+2026-05-16 21:50:26,699 - DEBUG - Sent: a
+2026-05-16 21:50:36,741 - DEBUG - Sent: c
+2026-05-16 21:52:41,820 - DEBUG - Sent: s
+2026-05-16 21:52:53,509 - DEBUG - Sent: s
+2026-05-16 21:52:56,424 - DEBUG - Sent: s
+2026-05-16 21:52:57,264 - DEBUG - Sent: s
+2026-05-16 21:53:08,230 - DEBUG - Sent: s
+2026-05-16 21:53:10,965 - DEBUG - Sent: a
+2026-05-16 21:53:24,526 - DEBUG - Sent: s
+2026-05-16 21:53:39,358 - INFO - Disconnected
+2026-05-16 21:56:42,633 - INFO - Logging started: C:\Users\graha\Desktop\DoNotDelete\GitHub\SarcnetMiniSatelliteTrackerMK1\Core\SarcnetMiniSatelliteTrackerMK1\SourceCode\Code_Authers\Custom_ProjectSourceCode\Nathan-Busse\DevTools\Tools\MagneticDeclinationCalculator\logs\rotator7_raw_20260516_215642.csv
+2026-05-16 22:35:31,809 - INFO - Logging stopped: C:\Users\graha\Desktop\DoNotDelete\GitHub\SarcnetMiniSatelliteTrackerMK1\Core\SarcnetMiniSatelliteTrackerMK1\SourceCode\Code_Authers\Custom_ProjectSourceCode\Nathan-Busse\DevTools\Tools\MagneticDeclinationCalculator\logs\rotator7_raw_20260516_215642.csv

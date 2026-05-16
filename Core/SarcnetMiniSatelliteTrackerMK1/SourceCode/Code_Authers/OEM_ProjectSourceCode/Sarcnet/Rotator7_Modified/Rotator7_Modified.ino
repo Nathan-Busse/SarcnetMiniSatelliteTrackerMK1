@@ -338,9 +338,9 @@ void processUserCommands(String line) {
   char command = line.charAt(0);                          //Get the first character
   switch (command) {                                      //Process type 1 user commands
     case 'r':                                             //Reset command
-      SerialPort.println("Reset in progress");
+      SerialPort.println("Reboot in progress");
       reset(true);  //Reset the rotator and load calibration from EEPROM
-      SerialPort.println("Reset complete");
+      SerialPort.println("Reboot complete");
       break;
     case 'b':                                             //Debug command
       SerialPort.println("Debugging in progress: Press 'a' to abort");

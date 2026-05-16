@@ -760,8 +760,13 @@ class Rotator7App(ctk.CTk):
         self._build_monitor_tab()
         self._build_calib_tab()
         self._build_macros_tab()
-        self._build_location_tab()      # NEW – all WiFi/IP/GPS features
-        self._build_declination_tab()  # manual declination + send to rotator
+        self._build_location_tab()      # Build location before declination
+        self._build_declination_tab()   # Build declination last – its entries now exist
+
+        # If we had saved coords, we already updated the location labels in _build_location_tab
+        # Now that declination tab exists, sync those saved coords to its entry fields
+        if self.latitude is not None:
+            self._sync_declination_entries()
 
         # Status bar
         status_frame = ctk.CTkFrame(self, fg_color=COLORS["card_bg"], corner_radius=6)
@@ -953,9 +958,10 @@ class Rotator7App(ctk.CTk):
         ctk.CTkButton(btn_row2, text="Send to Rotator", command=self._send_location_decl,
                       width=120, fg_color=COLORS["gold"], text_color="black").pack(side="left", padx=5)
 
-        # Update fields if saved coords exist
-        if self.latitude is not None:
-            self._update_coord_display(self.latitude, self.longitude, "Saved")
+        # Update location labels if saved coords exist – do NOT touch declination entries here
+        if self.latitude is not None and self.longitude is not None:
+            self.lbl_coords.configure(text=f"Lat: {self.latitude:.6f}  Lon: {self.longitude:.6f}")
+            self.lbl_precision.configure(text="Source: Saved")
 
     # ---------- Declination Tab (manual calculator + GPS) ----------
     def _build_declination_tab(self):
@@ -979,15 +985,29 @@ class Rotator7App(ctk.CTk):
         ctk.CTkButton(info_frame, text="Send to Rotator", command=self._send_decl_to_rotator,
                       width=120, fg_color=COLORS["secondary"]).pack(side="left", padx=10)
 
-        if self.config.get("last_lat"):
-            self.lat_entry.insert(0, str(self.config["last_lat"]))
-        if self.config.get("last_lon"):
-            self.lon_entry.insert(0, str(self.config["last_lon"]))
+        # Use .get() for config access
+        last_lat = self.config.get("last_lat")
+        last_lon = self.config.get("last_lon")
+        if last_lat is not None:
+            self.lat_entry.insert(0, str(last_lat))
+        if last_lon is not None:
+            self.lon_entry.insert(0, str(last_lon))
 
         if SERIAL_AVAILABLE:
             ctk.CTkButton(info_frame, text="GPS", command=self._gps_get_coords,
                           width=60, fg_color="transparent", border_width=1,
                           border_color=COLORS["secondary"], text_color=COLORS["secondary"]).pack(side="left", padx=10)
+
+    # ---------- Helper to sync saved coords into declination entries after both tabs built ----------
+    def _sync_declination_entries(self):
+        if hasattr(self, 'lat_entry') and hasattr(self, 'lon_entry'):
+            self.lat_entry.delete(0, "end")
+            self.lon_entry.delete(0, "end")
+            if self.latitude is not None:
+                self.lat_entry.insert(0, f"{self.latitude:.6f}")
+            if self.longitude is not None:
+                self.lon_entry.insert(0, f"{self.longitude:.6f}")
+            self._calc_declination()
 
     # ---------- Bindings ----------
     def _setup_bindings(self):
@@ -1188,18 +1208,23 @@ class Rotator7App(ctk.CTk):
 
     # ---------- Location helpers ----------
     def _update_coord_display(self, lat, lon, source, detail=""):
+        """Update all coordinate displays (location tab labels + declination tab entries if they exist)."""
         self.latitude = lat
         self.longitude = lon
         self.config.set("last_lat", lat)
         self.config.set("last_lon", lon)
+        # Update location tab labels
         self.lbl_coords.configure(text=f"Lat: {lat:.6f}  Lon: {lon:.6f}")
         self.lbl_precision.configure(text=f"Source: {source}{' (' + detail + ')' if detail else ''}")
-        # Also update declination tab entries
-        self.lat_entry.delete(0, "end")
-        self.lon_entry.delete(0, "end")
-        self.lat_entry.insert(0, f"{lat:.6f}")
-        self.lon_entry.insert(0, f"{lon:.6f}")
-        self._calc_declination()
+        # Update declination tab entries if they exist (may not be built yet)
+        if hasattr(self, 'lat_entry') and hasattr(self, 'lon_entry'):
+            self.lat_entry.delete(0, "end")
+            self.lon_entry.delete(0, "end")
+            self.lat_entry.insert(0, f"{lat:.6f}")
+            self.lon_entry.insert(0, f"{lon:.6f}")
+        # Calculate declination if possible
+        if hasattr(self, 'decl_result'):
+            self._calc_declination()
 
     def _auto_locate(self):
         self._console_log("Starting auto-locate...")
@@ -1237,7 +1262,6 @@ class Rotator7App(ctk.CTk):
         if not SERIAL_AVAILABLE:
             self._status_msg("pyserial not installed")
             return
-        # Use simple GPS reader (not persistent)
         def gps_thread():
             gps = GPSReader()
             port = gps.find_gps_port()
@@ -1298,7 +1322,6 @@ class Rotator7App(ctk.CTk):
         ctk.CTkButton(popup, text="Calibrate", command=do_calibrate, fg_color=COLORS["gold"]).pack(pady=10)
 
     def _calibrate_wifi_thread(self, lat, lon):
-        # Delete old DB
         if WIFI_DB_PATH.exists():
             WIFI_DB_PATH.unlink()
         scanner = WiFiScanner(log_func=self._console_log)
@@ -1362,7 +1385,6 @@ class Rotator7App(ctk.CTk):
             self._status_msg("Calculate declination first")
 
     def _gps_get_coords(self):
-        # Small GPS for declination tab
         if not SERIAL_AVAILABLE:
             self._status_msg("pyserial not installed")
             return

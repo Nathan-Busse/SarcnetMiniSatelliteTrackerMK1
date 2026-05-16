@@ -48,3 +48,6 @@
 2026-05-16 12:59:24,128 - DEBUG - Sent: e-20.73
 2026-05-16 12:59:32,149 - DEBUG - Sent: s
 2026-05-16 13:01:28,601 - INFO - Disconnected
+2026-05-16 14:10:38,853 - INFO - Connected to COM5 @ 9600
+2026-05-16 14:10:43,609 - DEBUG - Sent: h
+2026-05-16 14:10:52,286 - INFO - Disconnected

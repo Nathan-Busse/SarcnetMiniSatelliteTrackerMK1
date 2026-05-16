@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Rotator7 Control Center v3.0 — Arduino Nano + GY‑511 + WiFi‑IP geolocation
+Rotator7 Control Center v3.1 — Arduino Nano + GY‑511 + WiFi‑IP geolocation
 ===========================================================================
 Full‑featured interface:
   - Real‑time data streaming (debug / monitor / calibration) with live plots
@@ -10,7 +10,7 @@ Full‑featured interface:
   - CSV data logging
   - Declination calculator (offline GeoDude)
   - Wi‑Fi scanning, BeaconDB, offline DB, IP geolocation, manual coords, GPS
-  - Custom command terminal with history
+  - Custom command terminal with history AND live data plot (split screen)
   - Persistent configuration, appearance themes
   - Comprehensive error handling and reconnection
 """
@@ -60,7 +60,7 @@ except ImportError:
     MPL_AVAILABLE = False
 
 # -------------------------- Constants --------------------------
-APP_TITLE = "Rotator7 Control Center v3.0"
+APP_TITLE = "Rotator7 Control Center v3.1"
 DEFAULT_BAUD = 115200
 CONFIG_PATH = BASE_DIR / "rotator_config.json"
 LOG_DIR = BASE_DIR / "logs"
@@ -334,7 +334,7 @@ class BeaconDBClient:
             "wifiAccessPoints": [{"macAddress": b, "signalStrength": -70} for b in bssids[:10]],
             "considerIp": False
         }
-        headers = {"User-Agent": "Rotator7ControlCenter/3.0"}
+        headers = {"User-Agent": "Rotator7ControlCenter/3.1"}
         try:
             r = requests.post(url, json=payload, headers=headers, timeout=5)
             if r.status_code == 200:
@@ -360,7 +360,7 @@ class BeaconDBClient:
                 "wifiAccessPoints": [{"macAddress": b, "signalStrength": -70, "channel": 0, "frequency": 0} for b in bssids]
             }]
         }
-        headers = {"User-Agent": "Rotator7ControlCenter/3.0", "Content-Type": "application/json"}
+        headers = {"User-Agent": "Rotator7ControlCenter/3.1", "Content-Type": "application/json"}
         try:
             r = requests.post(url, json=payload, headers=headers, timeout=10)
             if r.status_code == 200:
@@ -774,17 +774,40 @@ class Rotator7App(ctk.CTk):
         self.status_label = ctk.CTkLabel(status_frame, text="Ready", text_color=COLORS["text_secondary"])
         self.status_label.pack(side="left", padx=10)
 
-    # ---------- Terminal Tab ----------
+    # ---------- Terminal Tab (NOW WITH SPLIT-SCREEN LIVE PLOT) ----------
     def _build_terminal_tab(self):
         frame = ctk.CTkFrame(self.tab_terminal, fg_color="transparent")
         frame.pack(fill="both", expand=True, padx=10, pady=5)
 
-        self.terminal_output = ctk.CTkTextbox(frame, font=("Consolas", 11), fg_color="#0d1117",
+        # Horizontal split: left = text console, right = plot
+        split_frame = ctk.CTkFrame(frame, fg_color="transparent")
+        split_frame.pack(fill="both", expand=True)
+
+        # Left pane – terminal output
+        left_frame = ctk.CTkFrame(split_frame, fg_color="transparent")
+        left_frame.pack(side="left", fill="both", expand=True, padx=(0,5))
+
+        self.terminal_output = ctk.CTkTextbox(left_frame, font=("Consolas", 11), fg_color="#0d1117",
                                               text_color="#c9d1d9", border_width=0, corner_radius=8)
         self.terminal_output.pack(fill="both", expand=True, pady=(0,5))
 
+        # Right pane – live plot for terminal data
+        right_frame = ctk.CTkFrame(split_frame, fg_color="transparent", width=350)
+        right_frame.pack(side="left", fill="both", expand=False)
+        right_frame.pack_propagate(False)   # keep width
+
+        self.terminal_plot = LivePlotFrame(right_frame, title="Live Data (from Terminal)", ylabel="Values")
+        self.terminal_plot.pack(fill="both", expand=True, pady=(0,2))
+
+        # Clear plot button
+        ctk.CTkButton(right_frame, text="Clear Plot", command=self.terminal_plot.clear,
+                      width=80, fg_color="transparent", border_width=1,
+                      border_color=COLORS["secondary"], text_color=COLORS["secondary"],
+                      font=("Arial", 10)).pack(pady=2)
+
+        # Input frame (below the split)
         input_frame = ctk.CTkFrame(frame, fg_color="transparent")
-        input_frame.pack(fill="x")
+        input_frame.pack(fill="x", pady=(5,0))
         self.cmd_entry = ctk.CTkEntry(input_frame, font=("Consolas", 12), placeholder_text="Type command...")
         self.cmd_entry.pack(side="left", fill="x", expand=True, padx=(0,5))
         self.cmd_entry.bind("<Return>", self._send_command)
@@ -793,8 +816,8 @@ class Rotator7App(ctk.CTk):
 
         ctk.CTkButton(input_frame, text="Send", command=self._send_command, width=60,
                       fg_color=COLORS["accent"]).pack(side="left")
-        ctk.CTkButton(input_frame, text="Clear", command=lambda: self.terminal_output.delete("1.0","end"),
-                      width=60, fg_color="transparent", border_width=1,
+        ctk.CTkButton(input_frame, text="Clear Text", command=lambda: self.terminal_output.delete("1.0","end"),
+                      width=80, fg_color="transparent", border_width=1,
                       border_color=COLORS["secondary"], text_color=COLORS["secondary"]).pack(side="left", padx=5)
 
     # ---------- Debug Tab ----------
@@ -1021,6 +1044,8 @@ class Rotator7App(ctk.CTk):
             self.debug_plot_mag.refresh()
             self.debug_plot_gyro.refresh()
             self.monitor_plot.refresh()
+        if hasattr(self, 'terminal_plot'):
+            self.terminal_plot.refresh()
         self.after(100, self._plot_update_loop)
 
     # ---------- Console log helper for location tab ----------
@@ -1030,10 +1055,30 @@ class Rotator7App(ctk.CTk):
 
     # ---------- Serial callbacks ----------
     def _on_raw_line(self, line):
+        # Update text terminal
         self.after(0, lambda: self.terminal_output.insert("end", line + "\n"))
         self.after(0, lambda: self.terminal_output.see("end"))
+
+        # Try to parse numeric data for the terminal plot
+        self._update_terminal_plot(line)
+
         if self.logging_active:
             self.log_data.log(line)
+
+    def _update_terminal_plot(self, line):
+        """Parse comma‑separated numbers from the line and feed them to the terminal plot."""
+        parts = line.split(",")
+        numeric_vals = []
+        for p in parts:
+            try:
+                numeric_vals.append(float(p))
+            except ValueError:
+                pass
+        # Only plot if we have at least 2 numbers (a meaningful series)
+        if len(numeric_vals) >= 2:
+            for i, val in enumerate(numeric_vals):
+                # Label each trace as "ch0", "ch1", etc.
+                self.after(0, lambda v=val, idx=i: self.terminal_plot.add_data(f"ch{idx}", v))
 
     def _on_debug(self, mx, my, mz, gx, gy, gz):
         self.after(0, lambda: self._update_debug_plots(mx, my, mz, gx, gy, gz))

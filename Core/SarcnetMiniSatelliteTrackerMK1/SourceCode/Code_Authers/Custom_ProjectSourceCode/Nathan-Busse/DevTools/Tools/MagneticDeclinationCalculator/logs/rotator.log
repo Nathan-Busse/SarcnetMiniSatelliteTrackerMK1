@@ -95,3 +95,18 @@
 2026-05-16 14:41:12,075 - DEBUG - Sent: h
 2026-05-16 14:45:51,577 - INFO - Disconnected
 2026-05-16 14:45:51,807 - WARNING - Serial connection lost
+2026-05-16 14:58:54,910 - INFO - Connected to COM5 @ 9600
+2026-05-16 14:59:08,510 - DEBUG - Sent: h
+2026-05-16 14:59:43,874 - DEBUG - Sent: e-20.73
+2026-05-16 14:59:47,762 - DEBUG - Sent: s
+2026-05-16 14:59:56,817 - DEBUG - Sent: r
+2026-05-16 15:00:22,070 - DEBUG - Sent: m
+2026-05-16 15:00:58,444 - DEBUG - Sent: a
+2026-05-16 15:01:23,274 - INFO - Disconnected
+2026-05-16 15:01:23,278 - WARNING - Serial connection lost
+2026-05-16 15:02:00,682 - INFO - Connected to COM5 @ 9600
+2026-05-16 15:02:06,435 - DEBUG - Sent: h
+2026-05-16 15:02:19,830 - DEBUG - Sent: e-20.73
+2026-05-16 15:02:24,602 - DEBUG - Sent: s
+2026-05-16 15:03:42,403 - INFO - Disconnected
+2026-05-16 15:03:42,600 - WARNING - Serial connection lost

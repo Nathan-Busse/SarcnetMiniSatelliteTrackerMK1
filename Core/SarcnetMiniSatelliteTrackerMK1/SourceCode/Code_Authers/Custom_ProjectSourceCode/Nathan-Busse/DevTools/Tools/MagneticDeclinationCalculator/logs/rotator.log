@@ -304,3 +304,28 @@
 2026-05-16 21:53:39,358 - INFO - Disconnected
 2026-05-16 21:56:42,633 - INFO - Logging started: C:\Users\graha\Desktop\DoNotDelete\GitHub\SarcnetMiniSatelliteTrackerMK1\Core\SarcnetMiniSatelliteTrackerMK1\SourceCode\Code_Authers\Custom_ProjectSourceCode\Nathan-Busse\DevTools\Tools\MagneticDeclinationCalculator\logs\rotator7_raw_20260516_215642.csv
 2026-05-16 22:35:31,809 - INFO - Logging stopped: C:\Users\graha\Desktop\DoNotDelete\GitHub\SarcnetMiniSatelliteTrackerMK1\Core\SarcnetMiniSatelliteTrackerMK1\SourceCode\Code_Authers\Custom_ProjectSourceCode\Nathan-Busse\DevTools\Tools\MagneticDeclinationCalculator\logs\rotator7_raw_20260516_215642.csv
+2026-05-17 12:45:45,382 - INFO - Connected to COM5 @ 9600
+2026-05-17 12:45:52,550 - DEBUG - Sent: b
+2026-05-17 12:54:31,453 - DEBUG - Sent: p
+2026-05-17 12:55:04,662 - DEBUG - Sent: e-20.73
+2026-05-17 12:55:07,230 - DEBUG - Sent: s
+2026-05-17 12:55:46,920 - DEBUG - Sent: m
+2026-05-17 12:58:34,434 - DEBUG - Sent: a
+2026-05-17 12:59:42,696 - DEBUG - Sent: b
+2026-05-17 13:01:16,860 - DEBUG - Sent: a
+2026-05-17 13:01:20,573 - INFO - Disconnected
+2026-05-17 13:01:20,742 - WARNING - Serial connection lost
+2026-05-17 13:05:24,335 - INFO - Connected to COM5 @ 9600
+2026-05-17 13:05:34,756 - DEBUG - Sent: b
+2026-05-17 13:10:10,188 - DEBUG - Sent: p
+2026-05-17 13:10:31,484 - DEBUG - Sent: m
+2026-05-17 13:10:49,881 - DEBUG - Sent: a
+2026-05-17 13:11:08,180 - INFO - Disconnected
+2026-05-17 13:11:08,190 - WARNING - Serial connection lost
+2026-05-17 13:12:16,135 - INFO - Connected to COM5 @ 9600
+2026-05-17 13:12:22,383 - DEBUG - Sent: m
+2026-05-17 13:13:06,289 - DEBUG - Sent: a
+2026-05-17 13:13:31,354 - DEBUG - Sent: m
+2026-05-17 13:13:42,780 - DEBUG - Sent: a
+2026-05-17 13:14:14,977 - INFO - Disconnected
+2026-05-17 13:14:14,982 - WARNING - Serial connection lost

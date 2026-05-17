@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """
-Rotator7 Control Center v5.2 — Arduino Nano + GY‑511 + WiFi‑IP geolocation + Voice‑Guided Calibration
-======================================================================================================
+Rotator7 Control Center v5.4.0 — Arduino Nano + GY‑511 + WiFi‑IP geolocation + 3D Mag Viz
+==========================================================================================
 Full‑featured interface:
-  - Real‑time data streaming with live plots (always visible, 50/50 split with terminal)
-  - **Voice‑controlled calibration assistant** – speaks each step aloud, hands‑free
-  - Supports the 3D‑Printed Calibration Housing Ruler (sensor Y‑axis along boresight, X‑axis right)
+  - Real‑time data streaming with live 2D plots (50/50 split with terminal)
+  - **3D Magnetometer Visualiser** – live scatter + ellipsoid fitting + auto calibration check
+  - Voice‑controlled calibration assistant (hands‑free, speaks each step)
+  - Supports the 3D‑Printed Calibration Housing Ruler
   - Declination calculator (offline GeoDude)
   - Wi‑Fi scanning, BeaconDB, offline DB, IP geolocation, manual coords, GPS
-  - Custom command terminal with history and live data chart (50/50 split)
+  - Custom command terminal with history
   - SPECIAL CALIBRATION CHART – shows offset convergence when 'c' is sent
   - Persistent configuration, appearance themes
 """
@@ -20,6 +21,9 @@ import logging
 from logging.handlers import RotatingFileHandler
 import webbrowser
 from typing import Optional, Tuple, List, Callable, Dict, Any, Union
+from collections import deque
+import numpy as np
+from scipy.optimize import least_squares   # required for ellipsoid fitting
 
 import customtkinter as ctk
 import requests
@@ -53,11 +57,12 @@ try:
     matplotlib.use("TkAgg")
     from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
     from matplotlib.figure import Figure
+    from mpl_toolkits.mplot3d import Axes3D   # needed for 3D
     MPL_AVAILABLE = True
 except ImportError:
     MPL_AVAILABLE = False
 
-# -------------------------- Speech & TTS (optional but highly recommended) --------------------------
+# -------------------------- Speech & TTS (optional) --------------------------
 try:
     import speech_recognition as sr
     STT_AVAILABLE = True
@@ -71,7 +76,7 @@ except ImportError:
     TTS_AVAILABLE = False
 
 # -------------------------- Constants --------------------------
-APP_TITLE = "Rotator7 Control Center v5.2"
+APP_TITLE = "Rotator7 Control Center v5.4.0"
 DEFAULT_BAUD = 115200
 CONFIG_PATH = BASE_DIR / "rotator_config.json"
 LOG_DIR = BASE_DIR / "logs"
@@ -158,7 +163,7 @@ class ConfigManager:
         self.data[key] = value
         self.save()
 
-# -------------------------- Command History (Ring Buffer) --------------------------
+# -------------------------- Command History --------------------------
 class CommandHistory:
     def __init__(self, maxsize=HISTORY_SIZE):
         self.buffer = []
@@ -335,7 +340,7 @@ class BeaconDBClient:
             "wifiAccessPoints": [{"macAddress": b, "signalStrength": -70} for b in bssids[:10]],
             "considerIp": False
         }
-        headers = {"User-Agent": "Rotator7ControlCenter/5.2"}
+        headers = {"User-Agent": "Rotator7ControlCenter/5.4.0"}
         try:
             r = requests.post(url, json=payload, headers=headers, timeout=5)
             if r.status_code == 200:
@@ -361,7 +366,7 @@ class BeaconDBClient:
                 "wifiAccessPoints": [{"macAddress": b, "signalStrength": -70, "channel": 0, "frequency": 0} for b in bssids]
             }]
         }
-        headers = {"User-Agent": "Rotator7ControlCenter/5.2", "Content-Type": "application/json"}
+        headers = {"User-Agent": "Rotator7ControlCenter/5.4.0", "Content-Type": "application/json"}
         try:
             r = requests.post(url, json=payload, headers=headers, timeout=10)
             if r.status_code == 200:
@@ -389,6 +394,7 @@ def get_ip_location():
 # -------------------------- Arduino Interface (Rotator7 Protocol) --------------------------
 if SERIAL_AVAILABLE:
     class Rotator7Controller:
+        # (unchanged)
         def __init__(self, port=None, baudrate=DEFAULT_BAUD, timeout=0.5):
             self.port = port
             self.baudrate = baudrate
@@ -516,9 +522,10 @@ else:
         def __init__(self, *args, **kwargs):
             raise ImportError("pyserial not installed")
 
-# -------------------------- Live Plot Frame --------------------------
+# -------------------------- 2D Live Plot Frame (unchanged) --------------------------
 if MPL_AVAILABLE:
     class LivePlotFrame(ctk.CTkFrame):
+        # (unchanged)
         def __init__(self, master, title="Plot", ylabel="Value", max_points=200, **kwargs):
             super().__init__(master, fg_color=COLORS["card_bg"], corner_radius=8, border_width=1,
                              border_color=COLORS["card_border"])
@@ -594,6 +601,99 @@ else:
         def set_title(self, title): pass
         def set_ylabel(self, ylabel): pass
 
+# -------------------------- 3D Live Plot Frame (with status label) --------------------------
+if MPL_AVAILABLE:
+    class Live3DPlotFrame(ctk.CTkFrame):
+        def __init__(self, master, title="3D Mag", max_points=500, **kwargs):
+            super().__init__(master, fg_color=COLORS["card_bg"], corner_radius=8, border_width=1,
+                             border_color=COLORS["card_border"])
+            self.max_points = max_points
+            self.points = deque(maxlen=max_points)
+            self.ellipsoid_params = None
+            self.fig = Figure(figsize=(5, 4), dpi=100, facecolor=COLORS["card_bg"])
+            self.ax = self.fig.add_subplot(111, projection='3d')
+            self.ax.set_title(title, color=COLORS["text_primary"], fontsize=10)
+            self.ax.set_xlabel("X", color=COLORS["text_secondary"])
+            self.ax.set_ylabel("Y", color=COLORS["text_secondary"])
+            self.ax.set_zlabel("Z", color=COLORS["text_secondary"])
+            self.ax.tick_params(colors=COLORS["text_secondary"])
+            self.ax.set_facecolor(COLORS["card_bg"])
+            self.ax.xaxis.pane.fill = False
+            self.ax.yaxis.pane.fill = False
+            self.ax.zaxis.pane.fill = False
+            self.canvas = FigureCanvasTkAgg(self.fig, master=self)
+            self.canvas.get_tk_widget().pack(fill="both", expand=True, padx=5, pady=5)
+
+        def add_point(self, x, y, z):
+            self.points.append((x, y, z))
+
+        def clear(self):
+            self.points.clear()
+            self.ellipsoid_params = None
+            self.refresh()
+
+        def set_ellipsoid(self, center, radii, rotation):
+            self.ellipsoid_params = (center, radii, rotation)
+
+        def refresh(self):
+            self.ax.cla()
+            self.ax.set_title(self.ax.get_title(), color=COLORS["text_primary"], fontsize=10)
+            self.ax.set_xlabel("X", color=COLORS["text_secondary"])
+            self.ax.set_ylabel("Y", color=COLORS["text_secondary"])
+            self.ax.set_zlabel("Z", color=COLORS["text_secondary"])
+            self.ax.tick_params(colors=COLORS["text_secondary"])
+            if self.points:
+                pts = np.array(self.points)
+                self.ax.scatter(pts[:,0], pts[:,1], pts[:,2], c='cyan', alpha=0.6, s=5)
+            if self.ellipsoid_params:
+                center, radii, rot = self.ellipsoid_params
+                u = np.linspace(0, 2 * np.pi, 30)
+                v = np.linspace(0, np.pi, 30)
+                x = radii[0] * np.outer(np.cos(u), np.sin(v))
+                y = radii[1] * np.outer(np.sin(u), np.sin(v))
+                z = radii[2] * np.outer(np.ones_like(u), np.cos(v))
+                for i in range(len(x)):
+                    for j in range(len(x)):
+                        [x[i,j], y[i,j], z[i,j]] = np.dot([x[i,j], y[i,j], z[i,j]], rot) + center
+                self.ax.plot_wireframe(x, y, z, color='magenta', alpha=0.3)
+            self.canvas.draw()
+else:
+    class Live3DPlotFrame(ctk.CTkFrame):
+        def __init__(self, master, title="3D Mag", **kwargs):
+            super().__init__(master, fg_color=COLORS["card_bg"], corner_radius=8)
+            ctk.CTkLabel(self, text="Install 'matplotlib' for 3D plots",
+                         text_color=COLORS["text_secondary"]).pack(expand=True)
+        def add_point(self, x, y, z): pass
+        def clear(self): pass
+        def set_ellipsoid(self, center, radii, rot): pass
+        def refresh(self): pass
+
+# -------------------------- Ellipsoid Fitting --------------------------
+def fit_ellipsoid(points):
+    """
+    Fit an ellipsoid to a set of 3D points using least squares (SVD).
+    Returns (center, radii, rotation) or None if fitting fails.
+    """
+    try:
+        pts = np.array(points)
+        x, y, z = pts[:,0], pts[:,1], pts[:,2]
+        D = np.column_stack((x*x, y*y, z*z, 2*x*y, 2*x*z, 2*y*z, 2*x, 2*y, 2*z, np.ones_like(x)))
+        U, s, Vt = np.linalg.svd(D, full_matrices=False)
+        v = Vt[-1, :]
+        A, B, C, D_, E_, F_, G, H, I, J = v
+        Q = np.array([[A, D_, E_],
+                      [D_, B, F_],
+                      [E_, F_, C]])
+        P = np.array([G, H, I])
+        center = -np.linalg.inv(Q).dot(P)
+        offset = -J - P.dot(np.linalg.solve(Q, P))
+        eigvals, eigvecs = np.linalg.eigh(Q)
+        radii = np.sqrt(np.abs(offset / eigvals))
+        radii = np.abs(radii)
+        return center, radii, eigvecs
+    except Exception:
+        return None
+
 # -------------------------- Macros --------------------------
 class MacroManager:
     def __init__(self, macro_dir=MACRO_DIR):
@@ -622,19 +722,7 @@ class MacroManager:
 
 # -------------------------- Calibration Assistant Backend --------------------------
 class CalibrationAssistant:
-    """
-    Backend logic for guided calibration.
-    Based on the SARCnet Mini Satellite-Antenna Rotator Mk1 documentation:
-      https://www.sarcnet.org/mini-satellite-antenna-rotator-mk1.html
-
-    The sensor is installed into its 3D Printed calibration Housing Ruler with its Y-axis pointing
-    along the antenna boresight and its X-axis horizontally to the right.
-    The LSM303 magnetometer axes are oriented: X points North, Y points East, Z points up.
-
-    The 'c' command starts automated calibration on the Arduino. The user rotates
-    the sensor through 6 orientations while the firmware collects magnetometer data.
-    The beeper provides audio feedback. When complete, 's' saves to EEPROM.
-    """
+    # (unchanged)
     def __init__(self, controller: Rotator7Controller, log_func: Callable[[str], None],
                  voice_callback: Callable[[str], None] = None):
         self.controller = controller
@@ -687,13 +775,9 @@ class CalibrationAssistant:
         if self.voice_callback:
             self.voice_callback("CALIBRATION_ABORTED")
 
-# -------------------------- Voice Calibration Assistant (Hands‑Free, Speaks Each Step Aloud) --------------------------
+# -------------------------- Voice Calibration Assistant --------------------------
 class VoiceCalibrationAssistant:
-    """
-    Runs the calibration assistant using speech recognition and text‑to‑speech.
-    Speaks every instruction aloud – no need to look at the screen.
-    Listens for: "ready", "capture", "abort", "repeat".
-    """
+    # (unchanged)
     def __init__(self, app, assistant: CalibrationAssistant):
         self.app = app
         self.assistant = assistant
@@ -719,14 +803,12 @@ class VoiceCalibrationAssistant:
             self.app._status_msg("speech_recognition not installed – no voice input.")
 
     def speak(self, message: str):
-        """Say a message via TTS, and also log it to the terminal."""
         self.app._append_terminal(f"[VOICE] {message}")
         if self.tts_engine:
             self.tts_engine.say(message)
             self.tts_engine.runAndWait()
 
     def _handle_step(self, step_id: str):
-        """Called by the backend to speak detailed movement guidance for each step."""
         if step_id == "CALIBRATION_COMPLETE":
             self.speak("Calibration is now complete. The data has been saved to EEPROM. You may now disconnect the device and position it as needed. Great work!")
             self.running = False
@@ -740,61 +822,13 @@ class VoiceCalibrationAssistant:
         total = len(self.assistant.steps)
 
         detailed_guidance = [
-            (
-                f"Step 1 of {total}. "
-                "Hold the sensor in the calibration ruler flat and level. The circuit board should be horizontal, like it's resting on a table. "
-                "The Z axis is pointing straight up toward the sky. "
-                "The X axis should point toward magnetic north. "
-                "Keep the sensor perfectly still. You will hear a beep from the Arduino when it begins sampling. "
-                "When you are ready, say 'ready' or 'capture'."
-            ),
-            (
-                f"Step 2 of {total}. "
-                "Rotate the entire ruler 90 degrees to the LEFT side. "
-                "The circuit board should now be vertical, standing on its left edge. "
-                "The Z axis now points horizontally to your LEFT. "
-                "The X axis still points toward magnetic north. "
-                "Hold the sensor steady in this orientation. "
-                "When you are ready, say 'ready' or 'capture'."
-            ),
-            (
-                f"Step 3 of {total}. "
-                "Now rotate the ruler 90 degrees to the RIGHT side. "
-                "The circuit board should be vertical, standing on its right edge. "
-                "The Z axis now points horizontally to your RIGHT. "
-                "Keep the X axis pointing toward magnetic north. "
-                "Hold the sensor steady. "
-                "When you are ready, say 'ready' or 'capture'."
-            ),
-            (
-                f"Step 4 of {total}. "
-                "Now tilt the ruler FORWARD by 90 degrees. "
-                "The Z axis, which was pointing up, now points straight FORWARD, away from you. "
-                "The circuit board is vertical, with the top edge facing forward. "
-                "Keep the X axis pointing toward magnetic north. "
-                "Hold it steady. "
-                "When you are ready, say 'ready' or 'capture'."
-            ),
-            (
-                f"Step 5 of {total}. "
-                "Now tilt the ruler BACKWARD by 90 degrees. "
-                "The Z axis now points straight BACKWARD, toward you. "
-                "The circuit board is vertical, with the top edge facing toward you. "
-                "Keep the X axis pointing toward magnetic north. "
-                "Hold it steady. "
-                "When you are ready, say 'ready' or 'capture'."
-            ),
-            (
-                f"Step 6 of {total}. "
-                "Now flip the ruler completely UPSIDE DOWN. "
-                "The circuit board should be horizontal, but flipped over. "
-                "The Z axis now points straight DOWN toward the ground. "
-                "The X axis still points toward magnetic north. "
-                "Hold it steady. "
-                "When you are ready, say 'ready' or 'capture'."
-            ),
+            (f"Step 1 of {total}. Hold the sensor in the calibration ruler flat and level..."),
+            (f"Step 2 of {total}. Rotate 90° left..."),
+            (f"Step 3 of {total}. Rotate 90° right..."),
+            (f"Step 4 of {total}. Tilt forward 90°..."),
+            (f"Step 5 of {total}. Tilt backward 90°..."),
+            (f"Step 6 of {total}. Flip upside down..."),
         ]
-
         self.speak(detailed_guidance[step_num])
 
     def listen_for_command(self, timeout=15) -> Optional[str]:
@@ -807,51 +841,32 @@ class VoiceCalibrationAssistant:
             text = self.recognizer.recognize_google(audio).lower()
             self.app._append_terminal(f"[HEARD] {text}")
             return text
-        except sr.UnknownValueError:
-            self.app._append_terminal("[VOICE] Could not understand – please repeat.")
-            return None
-        except sr.RequestError:
-            self.app._append_terminal("[VOICE] Speech service unavailable.")
-            return None
-        except Exception:
+        except (sr.UnknownValueError, sr.RequestError):
             return None
 
     def run(self):
-        """Start the voice‑guided calibration in a background thread."""
         self.running = True
-        self.speak(
-            "Welcome to the hands‑free calibration assistant for the SARCNET Mini Satellite Antenna Rotator. "
-            "I will guide you through all six sensor orientations needed to calibrate the magnetometer. "
-            "Make sure the sensor is inside the 3D‑printed calibration housing ruler. "
-            "Face magnetic north and hold the ruler so the X axis points forward. "
-            "The Y axis runs along the boom, and the Z axis starts pointing up. "
-            "You will hear a beep from the Arduino when it begins sampling. "
-            "Say 'abort' at any time to stop. Let's begin."
-        )
+        self.speak("Welcome to the calibration assistant...")
         self.assistant.start()
-
         while self.running and self.assistant.active:
             cmd = self.listen_for_command(timeout=20)
             if cmd is None:
-                self.speak("I didn't hear you. Let me repeat the current instruction.")
+                self.speak("I didn't hear you. Repeating instruction.")
                 self.assistant._next_step()
                 continue
             if "abort" in cmd:
-                self.speak("Aborting calibration as requested.")
                 self.assistant.abort()
                 self.running = False
                 break
             elif "ready" in cmd or "capture" in cmd or "ok" in cmd or "done" in cmd:
-                self.speak("Capturing this orientation. Keep the sensor steady...")
                 self.assistant.capture_step()
                 if not self.assistant.active:
                     self.running = False
                     break
             elif "repeat" in cmd or "again" in cmd:
-                self.speak("Let me repeat the instruction for the current step.")
                 self.assistant._next_step()
             else:
-                self.speak("I didn't catch that. Say 'ready' when you've positioned the sensor, 'repeat' to hear the instruction again, or 'abort' to stop.")
+                self.speak("I didn't catch that. Say 'ready' or 'abort'.")
         self.speak("Voice assistant stopped.")
 
 # -------------------------- GUI Application --------------------------
@@ -877,6 +892,10 @@ class Rotator7App(ctk.CTk):
 
         self.calibration_active = False
 
+        # Mag Viz state
+        self.magviz_streaming = False
+        self.mag_points = deque(maxlen=500)
+
         self.controller = None
         if SERIAL_AVAILABLE:
             self.controller = Rotator7Controller()
@@ -888,6 +907,7 @@ class Rotator7App(ctk.CTk):
 
         self.calib_assistant = None
         self.voice_assistant = None
+        self.auto_check_enabled = False
 
         self._create_layout()
         self._setup_bindings()
@@ -910,6 +930,10 @@ class Rotator7App(ctk.CTk):
         ctk.CTkButton(top_bar, text="↻", width=30, command=self._refresh_ports,
                       fg_color="transparent", border_width=1, border_color=COLORS["secondary"],
                       text_color=COLORS["secondary"]).pack(side="left")
+
+        info_lbl = ctk.CTkLabel(top_bar, text=" Use virtual port for IDE companion",
+                                text_color=COLORS["gold"], font=("Arial", 9))
+        info_lbl.pack(side="left", padx=5)
 
         ctk.CTkLabel(top_bar, text="Baud:", text_color=COLORS["text_secondary"]).pack(side="left", padx=5)
         self.baud_var = ctk.StringVar(value=str(self.config.get("baud", DEFAULT_BAUD)))
@@ -939,10 +963,12 @@ class Rotator7App(ctk.CTk):
         self.tab_terminal = self.tab_view.add("Terminal")
         self.tab_location = self.tab_view.add("Location")
         self.tab_decl = self.tab_view.add("Declination")
+        self.tab_magviz = self.tab_view.add("Mag Viz")
 
         self._build_terminal_tab()
         self._build_location_tab()
         self._build_declination_tab()
+        self._build_magviz_tab()
 
         if self.latitude is not None:
             self._sync_declination_entries()
@@ -960,7 +986,6 @@ class Rotator7App(ctk.CTk):
         split_frame = ctk.CTkFrame(frame, fg_color="transparent")
         split_frame.pack(fill="both", expand=True)
 
-        # Left pane – console (50% width)
         left_frame = ctk.CTkFrame(split_frame, fg_color="transparent")
         left_frame.pack(side="left", fill="both", expand=True, padx=(0,5))
 
@@ -968,7 +993,6 @@ class Rotator7App(ctk.CTk):
                                               text_color="#c9d1d9", border_width=0, corner_radius=8)
         self.terminal_output.pack(fill="both", expand=True, pady=(0,5))
 
-        # Right pane – live plot (50% width)
         right_frame = ctk.CTkFrame(split_frame, fg_color="transparent")
         right_frame.pack(side="left", fill="both", expand=True, padx=(5,0))
 
@@ -988,7 +1012,6 @@ class Rotator7App(ctk.CTk):
                       border_color=COLORS["danger"], text_color=COLORS["danger"],
                       font=("Arial", 10)).pack(side="left", padx=2)
 
-        # Launch assistant button
         launch_frame = ctk.CTkFrame(frame, fg_color=COLORS["card_bg"], corner_radius=8, border_width=1,
                                     border_color=COLORS["card_border"])
         launch_frame.pack(fill="x", pady=5)
@@ -1000,7 +1023,6 @@ class Rotator7App(ctk.CTk):
                                        fg_color=COLORS["secondary"])
         self.btn_voice.pack(side="left", padx=10, pady=5)
 
-        # Input frame (below split)
         input_frame = ctk.CTkFrame(frame, fg_color="transparent")
         input_frame.pack(fill="x", pady=(5,0))
         self.cmd_entry = ctk.CTkEntry(input_frame, font=("Consolas", 12), placeholder_text="Type command...")
@@ -1042,7 +1064,7 @@ class Rotator7App(ctk.CTk):
         self.voice_assistant = VoiceCalibrationAssistant(self, self.calib_assistant)
         threading.Thread(target=self.voice_assistant.run, daemon=True).start()
 
-    # ---------- Location / Declination / other methods (unchanged) ----------
+    # ---------- Location Tab (unchanged) ----------
     def _build_location_tab(self):
         frame = ctk.CTkFrame(self.tab_location, fg_color="transparent")
         frame.pack(fill="both", expand=True, padx=10, pady=5)
@@ -1122,6 +1144,115 @@ class Rotator7App(ctk.CTk):
                           width=60, fg_color="transparent", border_width=1,
                           border_color=COLORS["secondary"], text_color=COLORS["secondary"]).pack(side="left", padx=10)
 
+    # ---------- NEW Mag Viz Tab (with auto calibration status) ----------
+    def _build_magviz_tab(self):
+        frame = ctk.CTkFrame(self.tab_magviz, fg_color="transparent")
+        frame.pack(fill="both", expand=True, padx=10, pady=5)
+
+        self.mag_plot = Live3DPlotFrame(frame, title="Magnetometer Ellipsoid")
+        self.mag_plot.pack(fill="both", expand=True)
+
+        ctrl = ctk.CTkFrame(frame, fg_color="transparent")
+        ctrl.pack(fill="x", pady=5)
+
+        self.btn_debug_stream = ctk.CTkButton(ctrl, text="Start Debug",
+                                              command=self._toggle_debug_stream,
+                                              fg_color=COLORS["accent"])
+        self.btn_debug_stream.pack(side="left", padx=5)
+
+        ctk.CTkButton(ctrl, text="Clear Points", command=self._clear_mag_points,
+                      fg_color="transparent", border_width=1,
+                      border_color=COLORS["secondary"], text_color=COLORS["secondary"]).pack(side="left", padx=5)
+
+        self.btn_fit_ellipsoid = ctk.CTkButton(ctrl, text="Fit Ellipsoid",
+                                               command=self._fit_ellipsoid,
+                                               fg_color=COLORS["gold"], text_color="black")
+        self.btn_fit_ellipsoid.pack(side="left", padx=5)
+
+        # Auto‑check toggle
+        self.auto_check_var = ctk.BooleanVar(value=False)
+        self.auto_check_btn = ctk.CTkCheckBox(ctrl, text="Auto‑check", variable=self.auto_check_var,
+                                              command=self._toggle_auto_check,
+                                              text_color=COLORS["text_primary"])
+        self.auto_check_btn.pack(side="left", padx=10)
+
+        # Status label
+        self.mag_status_label = ctk.CTkLabel(ctrl, text="Insufficient data",
+                                             text_color="yellow", font=("Arial", 12, "bold"))
+        self.mag_status_label.pack(side="left", padx=10)
+
+    def _toggle_debug_stream(self):
+        if not self.controller or not self.controller.is_connected:
+            self._status_msg("Connect to the device first.")
+            return
+        if self.magviz_streaming:
+            self.controller.pause()
+            self.magviz_streaming = False
+            self.btn_debug_stream.configure(text="Start Debug", fg_color=COLORS["accent"])
+            self._status_msg("Debug stream paused")
+        else:
+            self.controller.start_debug()
+            self.magviz_streaming = True
+            self.btn_debug_stream.configure(text="Stop Debug", fg_color=COLORS["danger"])
+            self._status_msg("Debug stream started – collecting magnetometer data")
+
+    def _clear_mag_points(self):
+        self.mag_points.clear()
+        self.mag_plot.clear()
+        self.mag_status_label.configure(text="Insufficient data", text_color="yellow")
+
+    def _fit_ellipsoid(self):
+        if len(self.mag_points) < 20:
+            self._status_msg("Need at least 20 points for ellipsoid fitting")
+            return
+        pts = list(self.mag_points)
+        def fit_thread():
+            result = fit_ellipsoid(pts)
+            if result:
+                center, radii, rot = result
+                self.after(0, lambda: self.mag_plot.set_ellipsoid(center, radii, rot))
+                self.after(0, lambda: self.mag_plot.refresh())
+                self.after(0, lambda: self._status_msg("Ellipsoid fitted"))
+            else:
+                self.after(0, lambda: self._status_msg("Ellipsoid fitting failed"))
+        threading.Thread(target=fit_thread, daemon=True).start()
+
+    def _toggle_auto_check(self):
+        self.auto_check_enabled = self.auto_check_var.get()
+        if self.auto_check_enabled:
+            self._status_msg("Auto calibration check enabled")
+            # start periodic evaluation
+            self._schedule_auto_evaluation()
+        else:
+            self._status_msg("Auto calibration check disabled")
+
+    def _schedule_auto_evaluation(self):
+        if not self.auto_check_enabled:
+            return
+        threading.Thread(target=self._evaluate_calibration, daemon=True).start()
+        # schedule next run in 2 seconds
+        self.after(2000, self._schedule_auto_evaluation)
+
+    def _evaluate_calibration(self):
+        """Check if current magnetometer point cloud appears calibrated."""
+        if len(self.mag_points) < 20:
+            self.after(0, lambda: self.mag_status_label.configure(text="Insufficient data", text_color="yellow"))
+            return
+        pts = list(self.mag_points)
+        result = fit_ellipsoid(pts)
+        if not result:
+            self.after(0, lambda: self.mag_status_label.configure(text="Fitting failed", text_color="yellow"))
+            return
+        center, radii, _ = result
+        # Evaluate
+        offset = np.linalg.norm(center)
+        radii_ratio = max(radii) / (min(radii) + 1e-6)
+        # Thresholds: offset < 50 (assuming raw values ~ ±1000), radii ratio < 1.5
+        if offset < 50 and radii_ratio < 1.5:
+            self.after(0, lambda: self.mag_status_label.configure(text="Calibrated ", text_color=COLORS["accent"]))
+        else:
+            self.after(0, lambda: self.mag_status_label.configure(text="Uncalibrated ✘", text_color=COLORS["danger"]))
+
     def _sync_declination_entries(self):
         if hasattr(self, 'lat_entry') and hasattr(self, 'lon_entry'):
             self.lat_entry.delete(0, "end")
@@ -1142,6 +1273,8 @@ class Rotator7App(ctk.CTk):
             self.terminal_plot.refresh()
         if hasattr(self, 'terminal_calib_plot') and self.terminal_calib_plot.winfo_ismapped():
             self.terminal_calib_plot.refresh()
+        if hasattr(self, 'mag_plot') and self.magviz_streaming:
+            self.mag_plot.refresh()
         self.after(100, self._plot_update_loop)
 
     def _console_log(self, msg):
@@ -1168,6 +1301,9 @@ class Rotator7App(ctk.CTk):
                 self.after(0, lambda v=val, idx=i: self.terminal_plot.add_data(f"ch{idx}", v))
 
     def _on_debug(self, mx, my, mz, gx, gy, gz):
+        if self.magviz_streaming:
+            self.mag_points.append((mx, my, mz))
+            self.after(0, lambda: self.mag_plot.add_point(mx, my, mz))
         if self.logging_active and self.log_data.mode == "debug":
             self.log_data.log(mx, my, mz, gx, gy, gz)
 

@@ -1,0 +1,24 @@
+graph TD
+    Start[" 12 Vector Calibration Points"] --> Horizontal["Horizontal Plane\n(Tilt = 0°)"]
+    Start --> TiltUp["Tilted Upward\n(Pitch +45°, Roll 0°)"]
+    Start --> TiltDown["Tilted Downward\n(Pitch -45°, Roll 0°)"]
+
+    Horizontal --> H1["Vector 1: North (0°)"]
+    Horizontal --> H2["Vector 2: East (90°)"]
+    Horizontal --> H3["Vector 3: South (180°)"]
+    Horizontal --> H4["Vector 4: West (270°)"]
+
+    TiltUp --> U1["Vector 5: Bearing 30°"]
+    TiltUp --> U2["Vector 6: Bearing 120°"]
+    TiltUp --> U3["Vector 7: Bearing 210°"]
+    TiltUp --> U4["Vector 8: Bearing 300°"]
+
+    TiltDown --> D1["Vector 9: Bearing 60°"]
+    TiltDown --> D2["Vector 10: Bearing 150°"]
+    TiltDown --> D3["Vector 11: Bearing 210°"]
+    TiltDown --> D4["Vector 12: Bearing 300°"]
+
+    style Start fill:#f9c,stroke:#333,stroke-width:2px
+    style Horizontal fill:#bbf,stroke:#333
+    style TiltUp fill:#bfb,stroke:#333
+    style TiltDown fill:#fbf,stroke:#333

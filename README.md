@@ -202,6 +202,24 @@ A satellite tracker is a device that automatically points an antenna toward an o
 
 ---
 
+
+
+The "12 vector points" on the GY-511 (LSM303DLHC e-Compass module) refer to a standard 3D calibration method used for magnetometers. By rotating the sensor into 12 specific orientations, you collect maximum/minimum field strength data to correct for "hard-iron" and "soft-iron" magnetic distortions in your hardware.To do this calibration, the module (and the attached microcontroller) must be held completely still for a few seconds at each of the following 12 cardinal and inclined points:1. Horizontal Plane (Tilt = 0°)Vector 1: Sensor flat, facing magnetic North (\(0^{\circ }\))Vector 2: Sensor flat, facing East (\(90^{\circ }\))Vector 3: Sensor flat, facing South (\(180^{\circ }\))Vector 4: Sensor flat, facing West (\(270^{\circ }\))2. Tilted Upward (e.g., Pitch \(+45^{\circ }\), Roll \(0^{\circ }\))Vector 5: Compass bearing at \(30^{\circ }\)Vector 6: Compass bearing at \(120^{\circ }\)Vector 7: Compass bearing at \(210^{\circ }\)Vector 8: Compass bearing at \(300^{\circ }\)3. Tilted Downward (e.g., Pitch \(-45^{\circ }\), Roll \(0^{\circ }\))Vector 9: Compass bearing at \(60^{\circ }\)Vector 10: Compass bearing at \(150^{\circ }\)Vector 11: Compass bearing at \(210^{\circ }\)Vector 12: Compass bearing at \(300^{\circ }\)Why This MattersFor absolute compass accuracy, your readings will form an ellipsoid that needs to be mathematically mapped back to a perfect sphere (offsetting the center to 0,0,0). Recording these 12 vector points provides the min/max table necessary to calculate the exact \(X\), \(Y\), and \(Z\) biases.Note: For the best results, you must perform this calibration procedure outdoors, away from ferrous metals (like steel desks or building frames) and magnetic components (like unshielded speakers or motors).
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 ## 1. Understanding Magnetic Inclination & Declination
 
 The Earth’s magnetic field points **upwards** in the southern hemisphere, **downwards** in the northern hemisphere, and is **horizontal** at the equator. The angle it makes with the horizontal is called the **magnetic inclination** (or dip angle). The difference between magnetic north and true north is the **magnetic declination**.

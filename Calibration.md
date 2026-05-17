@@ -1,5 +1,29 @@
 # GY-511 (LSM303DLHC) 12-Point Magnetometer Calibration Guide
 
+## THE PHYSICAL MARKINGS ON YOUR SENSOR ARE IMPORTANT:
+
+The GY-511 module (housing an LSM303DLHC chip) contains a 3-axis accelerometer and magnetometer, plus an auxiliary gyroscope. Its axes use the right-hand rule: when flat, X points forward (nose), Y points left, and Z points up. Calibration fixes magnetic biases before heading calculations.
+
+**Axis Orientations**
+To ensure accurate spatial awareness, orient your board correctly in your project:
+
+- X-Axis: Positive is forward (the direction your robot or aircraft is traveling).
+
+- Y-Axis: Positive is to the left.
+
+- Z-Axis: Positive points straight up towards the sky.
+
+**Magnetometer Calibration (Hard and Soft Iron)**
+Magnetic materials and nearby electronics warp your sensor's readings, often producing elliptical data rather than a clean sphere. Calibration shifts and scales this data to a centered origin.
+
+1. **Collect Raw Data:** Run an I2C data-logging sketch to stream raw \((X, Y, Z)\)  magnetometer values to your serial monitor.
+
+2. **Move in a Sphere:** Slowly rotate the sensor through all 3-dimensional orientations (pitch, roll, and yaw) until you have captured a full 360-degree range of points in every direction.
+
+3. **Calculate Offsets:** Note the minimum and maximum values for each axis. Your offset is calculated as:\(\text{Offset} = \frac{\text{Max} + \text{Min}}{2}\)
+
+4. **Apply to Code:** Subtract these offsets from your raw readings and multiply them by your scale to get true compass headings in your Arduino sketch.
+
 ## How it works:
 
 For absolute compass accuracy, your readings will form an ellipsoid that needs to be mathematically mapped back to a perfect sphere (offsetting the center to 0,0,0). Recording these 12 vector points provides the min/max table necessary to calculate the exact **X**, **Y**, and **Z** biases.
@@ -29,31 +53,3 @@ you collect a set of data points.
 Algorithms—such as **MATLAB Magnetometer Calibration** calculate the mathematical parameters of the resulting ellipsoid. 
 
 The calibration process then generates a correction matrix that essentially shrinks, stretches, and centers the distorted ellipsoid back into a perfect, centered sphere, yielding true magnetic north and reliable attitude tracking.
-
-## Calibration Orientations Diagram
-```mermaid
-graph TD
-    Start[" 12 Vector Calibration Points"] --> Horizontal["Horizontal Plane\n(Tilt = 0°)"]
-    Start --> TiltUp["Tilted Upward\n(Pitch +45°, Roll 0°)"]
-    Start --> TiltDown["Tilted Downward\n(Pitch -45°, Roll 0°)"]
-
-    Horizontal --> H1["Vector 1: North (0°)"]
-    Horizontal --> H2["Vector 2: East (90°)"]
-    Horizontal --> H3["Vector 3: South (180°)"]
-    Horizontal --> H4["Vector 4: West (270°)"]
-
-    TiltUp --> U1["Vector 5: Bearing 30°"]
-    TiltUp --> U2["Vector 6: Bearing 120°"]
-    TiltUp --> U3["Vector 7: Bearing 210°"]
-    TiltUp --> U4["Vector 8: Bearing 300°"]
-
-    TiltDown --> D1["Vector 9: Bearing 60°"]
-    TiltDown --> D2["Vector 10: Bearing 150°"]
-    TiltDown --> D3["Vector 11: Bearing 210°"]
-    TiltDown --> D4["Vector 12: Bearing 300°"]
-
-    style Start fill:#f9c,stroke:#333,stroke-width:2px
-    style Horizontal fill:#bbf,stroke:#333
-    style TiltUp fill:#bfb,stroke:#333
-    style TiltDown fill:#fbf,stroke:#333
-```

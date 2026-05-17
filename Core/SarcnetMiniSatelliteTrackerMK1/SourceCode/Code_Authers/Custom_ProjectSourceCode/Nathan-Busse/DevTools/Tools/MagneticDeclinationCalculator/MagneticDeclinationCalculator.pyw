@@ -1,16 +1,18 @@
 #!/usr/bin/env python3
 """
-Rotator7 Control Center v5.4.0 — Arduino Nano + GY‑511 + WiFi‑IP geolocation + 3D Mag Viz
-==========================================================================================
+Rotator7 Control Center v5.6.2 — Arduino Nano + GY‑511 + WiFi‑IP geolocation + 3D Mag Viz + Live Compass
+=========================================================================================================
 Full‑featured interface:
   - Real‑time data streaming with live 2D plots (50/50 split with terminal)
   - **3D Magnetometer Visualiser** – live scatter + ellipsoid fitting + auto calibration check
+  - **Live Compass** – works with any incoming debug data, no extra clicks needed
   - Voice‑controlled calibration assistant (hands‑free, speaks each step)
   - Supports the 3D‑Printed Calibration Housing Ruler
   - Declination calculator (offline GeoDude)
   - Wi‑Fi scanning, BeaconDB, offline DB, IP geolocation, manual coords, GPS
   - Custom command terminal with history
   - SPECIAL CALIBRATION CHART – shows offset convergence when 'c' is sent
+  - **FIX: Debug stream is paused during calibration to avoid sensor lockup**
   - Persistent configuration, appearance themes
 """
 
@@ -23,6 +25,7 @@ import webbrowser
 from typing import Optional, Tuple, List, Callable, Dict, Any, Union
 from collections import deque
 import numpy as np
+import math
 from scipy.optimize import least_squares   # required for ellipsoid fitting
 
 import customtkinter as ctk
@@ -76,7 +79,7 @@ except ImportError:
     TTS_AVAILABLE = False
 
 # -------------------------- Constants --------------------------
-APP_TITLE = "Rotator7 Control Center v5.4.0"
+APP_TITLE = "Rotator7 Control Center v5.6.2"
 DEFAULT_BAUD = 115200
 CONFIG_PATH = BASE_DIR / "rotator_config.json"
 LOG_DIR = BASE_DIR / "logs"
@@ -340,7 +343,7 @@ class BeaconDBClient:
             "wifiAccessPoints": [{"macAddress": b, "signalStrength": -70} for b in bssids[:10]],
             "considerIp": False
         }
-        headers = {"User-Agent": "Rotator7ControlCenter/5.4.0"}
+        headers = {"User-Agent": "Rotator7ControlCenter/5.6.2"}
         try:
             r = requests.post(url, json=payload, headers=headers, timeout=5)
             if r.status_code == 200:
@@ -366,7 +369,7 @@ class BeaconDBClient:
                 "wifiAccessPoints": [{"macAddress": b, "signalStrength": -70, "channel": 0, "frequency": 0} for b in bssids]
             }]
         }
-        headers = {"User-Agent": "Rotator7ControlCenter/5.4.0", "Content-Type": "application/json"}
+        headers = {"User-Agent": "Rotator7ControlCenter/5.6.2", "Content-Type": "application/json"}
         try:
             r = requests.post(url, json=payload, headers=headers, timeout=10)
             if r.status_code == 200:
@@ -601,7 +604,7 @@ else:
         def set_title(self, title): pass
         def set_ylabel(self, ylabel): pass
 
-# -------------------------- 3D Live Plot Frame (with status label) --------------------------
+# -------------------------- 3D Live Plot Frame (unchanged) --------------------------
 if MPL_AVAILABLE:
     class Live3DPlotFrame(ctk.CTkFrame):
         def __init__(self, master, title="3D Mag", max_points=500, **kwargs):
@@ -610,6 +613,8 @@ if MPL_AVAILABLE:
             self.max_points = max_points
             self.points = deque(maxlen=max_points)
             self.ellipsoid_params = None
+            self.calib_extremes = None
+            self.latest_mag = None
             self.fig = Figure(figsize=(5, 4), dpi=100, facecolor=COLORS["card_bg"])
             self.ax = self.fig.add_subplot(111, projection='3d')
             self.ax.set_title(title, color=COLORS["text_primary"], fontsize=10)
@@ -626,14 +631,20 @@ if MPL_AVAILABLE:
 
         def add_point(self, x, y, z):
             self.points.append((x, y, z))
+            self.latest_mag = (x, y, z)
 
         def clear(self):
             self.points.clear()
             self.ellipsoid_params = None
+            self.calib_extremes = None
+            self.latest_mag = None
             self.refresh()
 
         def set_ellipsoid(self, center, radii, rotation):
             self.ellipsoid_params = (center, radii, rotation)
+
+        def set_calib_extremes(self, minX, maxX, minY, maxY, minZ, maxZ):
+            self.calib_extremes = (minX, maxX, minY, maxY, minZ, maxZ)
 
         def refresh(self):
             self.ax.cla()
@@ -656,6 +667,25 @@ if MPL_AVAILABLE:
                     for j in range(len(x)):
                         [x[i,j], y[i,j], z[i,j]] = np.dot([x[i,j], y[i,j], z[i,j]], rot) + center
                 self.ax.plot_wireframe(x, y, z, color='magenta', alpha=0.3)
+            if self.calib_extremes:
+                minX, maxX, minY, maxY, minZ, maxZ = self.calib_extremes
+                extremes = [
+                    (minX, 0, 0), (maxX, 0, 0),
+                    (0, minY, 0), (0, maxY, 0),
+                    (0, 0, minZ), (0, 0, maxZ)
+                ]
+                ext = np.array(extremes)
+                self.ax.scatter(ext[:,0], ext[:,1], ext[:,2], c='red', s=50, marker='o', label='Calib extremes')
+                corners = np.array([[minX, minY, minZ], [minX, minY, maxZ],
+                                    [minX, maxY, minZ], [minX, maxY, maxZ],
+                                    [maxX, minY, minZ], [maxX, minY, maxZ],
+                                    [maxX, maxY, minZ], [maxX, maxY, maxZ]])
+                edges = [(0,1),(0,2),(0,4),(1,3),(1,5),(2,3),(2,6),(3,7),(4,5),(4,6),(5,7),(6,7)]
+                for e in edges:
+                    self.ax.plot3D(*zip(corners[e[0]], corners[e[1]]), color='red', alpha=0.5)
+            if self.latest_mag:
+                mx, my, mz = self.latest_mag
+                self.ax.quiver(0, 0, 0, mx, my, mz, color='yellow', linewidth=2, arrow_length_ratio=0.1)
             self.canvas.draw()
 else:
     class Live3DPlotFrame(ctk.CTkFrame):
@@ -666,14 +696,11 @@ else:
         def add_point(self, x, y, z): pass
         def clear(self): pass
         def set_ellipsoid(self, center, radii, rot): pass
+        def set_calib_extremes(self, *args): pass
         def refresh(self): pass
 
 # -------------------------- Ellipsoid Fitting --------------------------
 def fit_ellipsoid(points):
-    """
-    Fit an ellipsoid to a set of 3D points using least squares (SVD).
-    Returns (center, radii, rotation) or None if fitting fails.
-    """
     try:
         pts = np.array(points)
         x, y, z = pts[:,0], pts[:,1], pts[:,2]
@@ -820,7 +847,6 @@ class VoiceCalibrationAssistant:
 
         step_num = int(step_id.split("_")[1])
         total = len(self.assistant.steps)
-
         detailed_guidance = [
             (f"Step 1 of {total}. Hold the sensor in the calibration ruler flat and level..."),
             (f"Step 2 of {total}. Rotate 90° left..."),
@@ -869,6 +895,51 @@ class VoiceCalibrationAssistant:
                 self.speak("I didn't catch that. Say 'ready' or 'abort'.")
         self.speak("Voice assistant stopped.")
 
+# -------------------------- Compass Frame (unchanged) --------------------------
+if MPL_AVAILABLE:
+    class CompassFrame(ctk.CTkFrame):
+        def __init__(self, master, **kwargs):
+            super().__init__(master, fg_color=COLORS["card_bg"], corner_radius=8, border_width=1,
+                             border_color=COLORS["card_border"])
+            self.heading_mag = 0.0
+            self.heading_true = None
+            self.fig = Figure(figsize=(4, 4), dpi=100, facecolor=COLORS["card_bg"])
+            self.ax = self.fig.add_subplot(111, projection='polar')
+            self.ax.set_theta_offset(np.pi/2)
+            self.ax.set_theta_direction(-1)
+            self.ax.set_facecolor(COLORS["card_bg"])
+            self.ax.tick_params(colors=COLORS["text_secondary"], labelsize=8)
+            self.ax.set_xticks(np.linspace(0, 2*np.pi, 12, endpoint=False))
+            self.ax.set_xticklabels(['N','','','E','','','S','','','W','',''])
+            self.ax.set_yticks([])
+            self.ax.plot(np.linspace(0, 2*np.pi, 100), np.ones(100)*1.1, color=COLORS["text_secondary"], linewidth=1)
+            self.needle, = self.ax.plot([0,0], [0,1], color='red', linewidth=2)
+            self.digital_label = ctk.CTkLabel(self, text="---°", font=("Arial", 18, "bold"),
+                                              text_color=COLORS["text_primary"])
+            self.digital_label.pack(pady=(5,0))
+            self.true_label = ctk.CTkLabel(self, text="", font=("Arial", 12),
+                                           text_color=COLORS["text_secondary"])
+            self.true_label.pack()
+            self.canvas = FigureCanvasTkAgg(self.fig, master=self)
+            self.canvas.get_tk_widget().pack(fill="both", expand=True, padx=5, pady=5)
+
+        def set_heading(self, heading_deg, declination=0.0):
+            self.heading_mag = heading_deg
+            rad = np.radians(heading_deg)
+            self.needle.set_data([0, rad], [0, 1])
+            self.digital_label.configure(text=f"{heading_deg:.1f}° Mag")
+            true_deg = (heading_deg + declination) % 360
+            self.heading_true = true_deg
+            self.true_label.configure(text=f"True: {true_deg:.1f}° (decl {declination:+.1f}°)" if abs(declination) > 0.01 else "")
+            self.canvas.draw_idle()
+else:
+    class CompassFrame(ctk.CTkFrame):
+        def __init__(self, master, **kwargs):
+            super().__init__(master, fg_color=COLORS["card_bg"], corner_radius=8)
+            ctk.CTkLabel(self, text="Install 'matplotlib' for compass",
+                         text_color=COLORS["text_secondary"]).pack(expand=True)
+        def set_heading(self, heading_deg, declination=0.0): pass
+
 # -------------------------- GUI Application --------------------------
 class Rotator7App(ctk.CTk):
     def __init__(self):
@@ -895,6 +966,11 @@ class Rotator7App(ctk.CTk):
         # Mag Viz state
         self.magviz_streaming = False
         self.mag_points = deque(maxlen=500)
+        self.calib_extremes = None
+
+        # Compass state
+        self.latest_heading = None
+        self.latest_declination = 0.0
 
         self.controller = None
         if SERIAL_AVAILABLE:
@@ -931,7 +1007,7 @@ class Rotator7App(ctk.CTk):
                       fg_color="transparent", border_width=1, border_color=COLORS["secondary"],
                       text_color=COLORS["secondary"]).pack(side="left")
 
-        info_lbl = ctk.CTkLabel(top_bar, text=" Use virtual port for IDE companion",
+        info_lbl = ctk.CTkLabel(top_bar, text="Use virtual port for IDE companion",
                                 text_color=COLORS["gold"], font=("Arial", 9))
         info_lbl.pack(side="left", padx=5)
 
@@ -964,11 +1040,13 @@ class Rotator7App(ctk.CTk):
         self.tab_location = self.tab_view.add("Location")
         self.tab_decl = self.tab_view.add("Declination")
         self.tab_magviz = self.tab_view.add("Mag Viz")
+        self.tab_compass = self.tab_view.add("Compass")
 
         self._build_terminal_tab()
         self._build_location_tab()
         self._build_declination_tab()
         self._build_magviz_tab()
+        self._build_compass_tab()
 
         if self.latitude is not None:
             self._sync_declination_entries()
@@ -1144,7 +1222,7 @@ class Rotator7App(ctk.CTk):
                           width=60, fg_color="transparent", border_width=1,
                           border_color=COLORS["secondary"], text_color=COLORS["secondary"]).pack(side="left", padx=10)
 
-    # ---------- NEW Mag Viz Tab (with auto calibration status) ----------
+    # ---------- Mag Viz Tab (unchanged) ----------
     def _build_magviz_tab(self):
         frame = ctk.CTkFrame(self.tab_magviz, fg_color="transparent")
         frame.pack(fill="both", expand=True, padx=10, pady=5)
@@ -1169,14 +1247,12 @@ class Rotator7App(ctk.CTk):
                                                fg_color=COLORS["gold"], text_color="black")
         self.btn_fit_ellipsoid.pack(side="left", padx=5)
 
-        # Auto‑check toggle
         self.auto_check_var = ctk.BooleanVar(value=False)
         self.auto_check_btn = ctk.CTkCheckBox(ctrl, text="Auto‑check", variable=self.auto_check_var,
                                               command=self._toggle_auto_check,
                                               text_color=COLORS["text_primary"])
         self.auto_check_btn.pack(side="left", padx=10)
 
-        # Status label
         self.mag_status_label = ctk.CTkLabel(ctrl, text="Insufficient data",
                                              text_color="yellow", font=("Arial", 12, "bold"))
         self.mag_status_label.pack(side="left", padx=10)
@@ -1189,12 +1265,16 @@ class Rotator7App(ctk.CTk):
             self.controller.pause()
             self.magviz_streaming = False
             self.btn_debug_stream.configure(text="Start Debug", fg_color=COLORS["accent"])
+            if hasattr(self, 'compass_debug_btn'):
+                self.compass_debug_btn.configure(text="Start Debug", fg_color=COLORS["accent"])
             self._status_msg("Debug stream paused")
         else:
             self.controller.start_debug()
             self.magviz_streaming = True
             self.btn_debug_stream.configure(text="Stop Debug", fg_color=COLORS["danger"])
-            self._status_msg("Debug stream started – collecting magnetometer data")
+            if hasattr(self, 'compass_debug_btn'):
+                self.compass_debug_btn.configure(text="Stop Debug", fg_color=COLORS["danger"])
+            self._status_msg("Debug stream started – magnetometer data flowing")
 
     def _clear_mag_points(self):
         self.mag_points.clear()
@@ -1221,7 +1301,6 @@ class Rotator7App(ctk.CTk):
         self.auto_check_enabled = self.auto_check_var.get()
         if self.auto_check_enabled:
             self._status_msg("Auto calibration check enabled")
-            # start periodic evaluation
             self._schedule_auto_evaluation()
         else:
             self._status_msg("Auto calibration check disabled")
@@ -1230,11 +1309,9 @@ class Rotator7App(ctk.CTk):
         if not self.auto_check_enabled:
             return
         threading.Thread(target=self._evaluate_calibration, daemon=True).start()
-        # schedule next run in 2 seconds
         self.after(2000, self._schedule_auto_evaluation)
 
     def _evaluate_calibration(self):
-        """Check if current magnetometer point cloud appears calibrated."""
         if len(self.mag_points) < 20:
             self.after(0, lambda: self.mag_status_label.configure(text="Insufficient data", text_color="yellow"))
             return
@@ -1244,15 +1321,31 @@ class Rotator7App(ctk.CTk):
             self.after(0, lambda: self.mag_status_label.configure(text="Fitting failed", text_color="yellow"))
             return
         center, radii, _ = result
-        # Evaluate
         offset = np.linalg.norm(center)
         radii_ratio = max(radii) / (min(radii) + 1e-6)
-        # Thresholds: offset < 50 (assuming raw values ~ ±1000), radii ratio < 1.5
         if offset < 50 and radii_ratio < 1.5:
-            self.after(0, lambda: self.mag_status_label.configure(text="Calibrated ", text_color=COLORS["accent"]))
+            self.after(0, lambda: self.mag_status_label.configure(text="Calibrated", text_color=COLORS["accent"]))
         else:
             self.after(0, lambda: self.mag_status_label.configure(text="Uncalibrated ✘", text_color=COLORS["danger"]))
 
+    # ---------- Compass Tab (unchanged) ----------
+    def _build_compass_tab(self):
+        frame = ctk.CTkFrame(self.tab_compass, fg_color="transparent")
+        frame.pack(fill="both", expand=True, padx=10, pady=5)
+
+        self.compass_frame = CompassFrame(frame)
+        self.compass_frame.pack(fill="both", expand=True)
+
+        btn_row = ctk.CTkFrame(frame, fg_color="transparent")
+        btn_row.pack(fill="x", pady=5)
+        self.compass_debug_btn = ctk.CTkButton(btn_row, text="Start Debug",
+                                               command=self._toggle_debug_stream,
+                                               fg_color=COLORS["accent"])
+        self.compass_debug_btn.pack(side="left", padx=5)
+        ctk.CTkLabel(btn_row, text="Start the debug stream for heading",
+                     text_color=COLORS["text_secondary"]).pack(side="left", padx=5)
+
+    # ---------- Core methods ----------
     def _sync_declination_entries(self):
         if hasattr(self, 'lat_entry') and hasattr(self, 'lon_entry'):
             self.lat_entry.delete(0, "end")
@@ -1275,6 +1368,8 @@ class Rotator7App(ctk.CTk):
             self.terminal_calib_plot.refresh()
         if hasattr(self, 'mag_plot') and self.magviz_streaming:
             self.mag_plot.refresh()
+        if hasattr(self, 'compass_frame') and self.latest_heading is not None:
+            self.compass_frame.set_heading(self.latest_heading, self.latest_declination)
         self.after(100, self._plot_update_loop)
 
     def _console_log(self, msg):
@@ -1301,9 +1396,15 @@ class Rotator7App(ctk.CTk):
                 self.after(0, lambda v=val, idx=i: self.terminal_plot.add_data(f"ch{idx}", v))
 
     def _on_debug(self, mx, my, mz, gx, gy, gz):
+        if abs(mx) > 1e-6 or abs(my) > 1e-6:
+            heading_rad = math.atan2(my, mx)
+            heading_deg = (math.degrees(heading_rad) + 360) % 360
+            self.latest_heading = heading_deg
+
         if self.magviz_streaming:
             self.mag_points.append((mx, my, mz))
             self.after(0, lambda: self.mag_plot.add_point(mx, my, mz))
+
         if self.logging_active and self.log_data.mode == "debug":
             self.log_data.log(mx, my, mz, gx, gy, gz)
 
@@ -1315,6 +1416,11 @@ class Rotator7App(ctk.CTk):
     def _on_calibration(self, data):
         if self.logging_active and self.log_data.mode == "calibration":
             self.log_data.log(*data)
+        if len(data) >= 13:
+            minX, maxX, minY, maxY, minZ, maxZ = data[4], data[5], data[6], data[7], data[8], data[9]
+            self.calib_extremes = (minX, maxX, minY, maxY, minZ, maxZ)
+            if hasattr(self, 'mag_plot'):
+                self.after(0, lambda: self.mag_plot.set_calib_extremes(*self.calib_extremes))
         if hasattr(self, 'terminal_calib_plot') and self.terminal_calib_plot.winfo_ismapped():
             if len(data) >= 13:
                 offsetX, offsetY, offsetZ = data[10], data[11], data[12]
@@ -1325,6 +1431,15 @@ class Rotator7App(ctk.CTk):
     def _on_status(self, msg):
         self.after(0, lambda: self._status_msg(msg))
         if "Calibration started" in msg:
+            # Pause debug stream to avoid sensor lockup
+            if self.magviz_streaming and self.controller:
+                self.controller.pause()
+                self.magviz_streaming = False
+                if hasattr(self, 'btn_debug_stream'):
+                    self.after(0, lambda: self.btn_debug_stream.configure(text="Start Debug", fg_color=COLORS["accent"]))
+                if hasattr(self, 'compass_debug_btn'):
+                    self.after(0, lambda: self.compass_debug_btn.configure(text="Start Debug", fg_color=COLORS["accent"]))
+                self._status_msg("Debug stream paused for calibration")
             self.after(0, self._activate_calibration_chart)
         elif "Calibration completed" in msg or "Aborted" in msg:
             self.after(0, self._deactivate_calibration_chart)
@@ -1573,6 +1688,7 @@ class Rotator7App(ctk.CTk):
                 raise ValueError
             dec = declination(lat, lon, 0)
             self.decl_result.configure(text=f"{dec:.2f}°")
+            self.latest_declination = dec
         except:
             pass
 

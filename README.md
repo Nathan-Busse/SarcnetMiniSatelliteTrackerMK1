@@ -11,10 +11,10 @@
 - [SARCTRAC 3D Sensor Calibration Guide](#sarctrac-3d-sensor-calibration-guide)
 
 ## IMPORTANT
-> ⚠️ Placeholder – add any safety warnings, compliance notes, or critical build instructions here.
+> ⚠️ When shopping for your parts always make sure to have spare hardware in your cart just  in case a component you have installed fails or is defective out of the box, especially for your 3D digital compass module... 
 
 ## Resources
-- Official Sarcnet website: [www.norcalhypno.com](http://www.norcalhypno.com)
+- Official Sarcnet website: [www.sercnet.org](http://www.sarcnet.org)
 - Official NOAA website: [www.ngdc.noaa.gov](https://www.ngdc.noaa.gov/geomag/calculators/magcalc.shtml)
 - Official Sarcnet calibration video: [Sensor calibration timestamps referenced below.](https://www.youtube.com/watch?v=oJnpO5Nj7Gc&t=7)
 

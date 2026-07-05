@@ -14,9 +14,9 @@
 > ⚠️ Placeholder – add any safety warnings, compliance notes, or critical build instructions here.
 
 ## Resources
-- Official website: [www.norcalhypno.com](http://www.norcalhypno.com)
+- Official Sarcnet website: [www.norcalhypno.com](http://www.norcalhypno.com)
 - Official NOAA website: [www.ngdc.noaa.gov](https://www.ngdc.noaa.gov/geomag/calculators/magcalc.shtml)
-- Sarcnet's calibration video: [Sensor calibration timestamps referenced below.](https://www.youtube.com/watch?v=oJnpO5Nj7Gc&t=7)
+- Official Sarcnet calibration video: [Sensor calibration timestamps referenced below.](https://www.youtube.com/watch?v=oJnpO5Nj7Gc&t=7)
 
 
 ## Introduction

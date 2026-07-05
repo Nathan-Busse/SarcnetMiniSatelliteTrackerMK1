@@ -15,7 +15,8 @@
 
 ## Resources
 - Official website: [www.norcalhypno.com](http://www.norcalhypno.com)
-- [Sarcnet's video (Sensor calibration): timestamps referenced below.](https://www.youtube.com/watch?v=oJnpO5Nj7Gc&t=7)
+- Official NOAA website: [www.ngdc.noaa.gov](https://www.ngdc.noaa.gov/geomag/calculators/magcalc.shtml)
+- Sarcnet's calibration video: [Sensor calibration timestamps referenced below.](https://www.youtube.com/watch?v=oJnpO5Nj7Gc&t=7)
 
 
 ## Introduction
